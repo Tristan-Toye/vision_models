@@ -11,3 +11,11 @@ gputil
 stable-baselines3
 matplotlib
 pillow
+ultralytics
+scikit-learn
+scikit-image
+opencv-python
+pyyaml
+tqdm
+pandas
+joblib

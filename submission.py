@@ -1,47 +1,56 @@
-"""Template of your submission file for Task 3 (multi agent KAZ).
+"""Submission file for Task 3 (multi agent KAZ).
 """
+import os
 from typing import Callable
+
+import numpy as np
 import gymnasium
 from pettingzoo.utils import BaseWrapper
 from pettingzoo.utils.env import AgentID, ObsType
 
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 class CustomWrapper(BaseWrapper):
-    """
-    Wrapper to use to add state pre-processing (feature engineering)
-    """
+    """Pass-through wrapper (preprocessing is handled inside the detector)."""
 
     def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
-        pass
+        return super().observation_space(agent)
 
     def observe(self, agent: AgentID) -> ObsType | None:
-        pass
+        return super().observe(agent)
 
 
 class CustomPredictFunction(Callable):
-    """Function to use to load the trained model and predict the action"""
+    """Placeholder for RL agent (not implemented in CV-only mode)."""
 
     def __init__(self, env: gymnasium.Env):
-        pass
+        self.env = env
 
     def __call__(self, observation, agent, *args, **kwargs):
-        pass
+        return self.env.action_space(agent).sample()
 
 
 class CustomZombieDetectorFunction(Callable):
-    """Function to use to load the trained model and predict where
-    the zombies are.
+    """Detect zombies using the trained CV model.
+
+    Returns a matrix of shape (nb_zombies, 4) where each row is
+    (x, y, width, height) ordered from most confident to least.
     """
 
     def __init__(self, env: gymnasium.Env):
-        pass
+        from zombie_detection.inference import ZombieDetector
+
+        model_path = os.path.join(PACKAGE_DIR, "zombie_detection", "checkpoints", "best_model.pt")
+        config_path = os.path.join(PACKAGE_DIR, "zombie_detection", "config.yaml")
+
+        # Default to yolov8n; change this after running experiments to the best model
+        self.detector = ZombieDetector(
+            model_path=model_path,
+            model_type="yolov8n",
+            config_path=config_path,
+        )
 
     def __call__(self, observation, *args, **kwargs):
-        """Returns a matrix of shape (nb_zombies, nb_attributes), where
-        the attributes are defining a rectangle with (x,y,width,heigh) and
-        indicate where the zombies are. The zombies are ordered from most
-        likely to least likely positions. The evaluation uses the first k
-        items if there are k zombies on the screen.
-        """
-        pass
+        return self.detector.detect(observation)
 

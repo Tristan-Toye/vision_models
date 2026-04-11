@@ -1,0 +1,70 @@
+zombie:
+  bbox_width: 29
+  bbox_height: 31
+
+screen:
+  width: 1280
+  height: 720
+
+dataset:
+  name: "kaz_zombie_v1"
+  base_dir: "zombie_detection/data"
+  num_train_examples: 10000
+  num_val_examples: 2000
+  num_test_examples: 2000
+  max_empty_frames: 500
+  sample_interval: 5
+  distortion_levels: [0, 1, 2, 3, 4, 5]
+  max_zombies: 10
+  min_examples_per_zombie_count: 200
+
+preprocessing:
+  resize: [360, 640]
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
+
+training:
+  default_batch_size: 16
+  default_lr: 0.001
+  default_epochs: 50
+  device: "cuda"
+
+experiments:
+  models:
+    - "heatmap_cnn"
+    - "resnet18_head"
+    - "resnet50_head"
+    - "yolov8n"
+    - "yolov11n"
+    - "faster_rcnn"
+    - "rt_detr"
+    - "hog_svm"
+    - "template_match"
+  loss_functions:
+    - "mse"
+    - "focal"
+    - "bce"
+    - "smooth_l1"
+    - "giou"
+  pretrained_modes:
+    - "frozen"
+    - "finetune"
+    - "scratch"
+  distortion_eval_groups:
+    - name: "none"
+      levels: [0]
+    - name: "low"
+      levels: [1, 2]
+    - name: "high"
+      levels: [3, 4]
+    - name: "extreme"
+      levels: [5]
+    - name: "mixed"
+      levels: [0, 1, 2, 3, 4, 5]
+  preprocessing_variants:
+    - "rgb"
+    - "grayscale"
+    - "rgb_edge"
+  resize_variants:
+    - [360, 640]       # half resolution
+    - null             # no resize, native 720x1280
