@@ -46,6 +46,73 @@ class AddEdgeChannel:
         return image, boxes
 
 
+MANUAL_FEATURE_NAMES = ["edge_magnitude", "gradient_orientation", "hsv_saturation", "lbp"]
+NUM_MANUAL_FEATURES = len(MANUAL_FEATURE_NAMES)
+
+
+def _compute_lbp(gray: np.ndarray) -> np.ndarray:
+    """Simplified 8-neighbor Local Binary Pattern."""
+    h, w = gray.shape
+    lbp = np.zeros((h, w), dtype=np.uint8)
+    padded = cv2.copyMakeBorder(gray, 1, 1, 1, 1, cv2.BORDER_REFLECT)
+    offsets = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
+    for bit, (dr, dc) in enumerate(offsets):
+        neighbor = padded[1 + dr: 1 + dr + h, 1 + dc: 1 + dc + w]
+        lbp |= ((neighbor >= gray).astype(np.uint8) << bit)
+    return lbp
+
+
+def compute_manual_features(image: np.ndarray) -> np.ndarray:
+    """Compute 4 handcrafted feature maps from an RGB(+) image.
+
+    Returns (H, W, 4) uint8 array with channels:
+      0: edge magnitude (Sobel)
+      1: gradient orientation
+      2: HSV saturation
+      3: Local Binary Pattern
+    """
+    rgb = image[:, :, :3]
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+    sx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    sy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+
+    edge_mag = np.sqrt(sx ** 2 + sy ** 2)
+    mag_max = edge_mag.max()
+    if mag_max > 0:
+        edge_mag = (edge_mag / mag_max * 255).clip(0, 255).astype(np.uint8)
+    else:
+        edge_mag = edge_mag.astype(np.uint8)
+
+    grad_orient = ((np.arctan2(sy, sx) / np.pi + 1) * 127.5).astype(np.uint8)
+
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    saturation = hsv[:, :, 1]
+
+    lbp = _compute_lbp(gray)
+
+    return np.stack([edge_mag, grad_orient, saturation, lbp], axis=-1)
+
+
+class AddManualFeatures:
+    """Append 4 handcrafted feature channels to the image.
+
+    Optional channel_mask allows zeroing out specific feature channels
+    for ablation experiments (indices 0-3 map to MANUAL_FEATURE_NAMES).
+    """
+
+    def __init__(self, channel_mask: list[bool] | None = None):
+        self.channel_mask = channel_mask
+
+    def __call__(self, image: np.ndarray, boxes: np.ndarray):
+        features = compute_manual_features(image)
+        if self.channel_mask is not None:
+            for i, keep in enumerate(self.channel_mask):
+                if not keep:
+                    features[:, :, i] = 0
+        return np.concatenate([image, features], axis=-1), boxes
+
+
 class RandomHorizontalFlip:
     """Flip image and boxes horizontally with probability p."""
 
@@ -108,6 +175,8 @@ def build_preprocessing_pipeline(
     variant: str = "rgb",
     augment: bool = False,
     resize: "list[int] | None" = "from_config",
+    manual_features: bool = False,
+    manual_features_mask: list[bool] | None = None,
 ) -> Compose:
     """Build a preprocessing pipeline from config.
 
@@ -117,6 +186,9 @@ def build_preprocessing_pipeline(
         augment: whether to include data augmentation transforms
         resize: [h, w] to resize, None for no resize, or "from_config" to
                 read from cfg["preprocessing"]["resize"]
+        manual_features: whether to append handcrafted feature channels
+        manual_features_mask: optional per-channel mask for ablation
+                              (length 4, True=keep, False=zero)
     """
     transforms = []
 
@@ -136,5 +208,8 @@ def build_preprocessing_pipeline(
         transforms.append(RandomHorizontalFlip(p=0.5))
         transforms.append(RandomBrightnessContrast())
         transforms.append(GaussianBlur(kernel_size=3, sigma=0.5))
+
+    if manual_features:
+        transforms.append(AddManualFeatures(channel_mask=manual_features_mask))
 
     return Compose(transforms)

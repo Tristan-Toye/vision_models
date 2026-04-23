@@ -63,6 +63,12 @@ PRETRAINED_APPLICABLE = {
     "template_match": ["scratch"],
 }
 
+MANUAL_FEATURES_APPLICABLE = {
+    "heatmap_cnn": [True, False],
+    "resnet18_head": [True, False],
+    "resnet50_head": [True, False],
+}
+
 
 def _resize_label(resize_val) -> str:
     """Human-readable label for a resize setting."""
@@ -77,6 +83,7 @@ def generate_experiment_configs(cfg: dict) -> list[dict]:
     exp_cfg = cfg["experiments"]
 
     resize_variants = exp_cfg.get("resize_variants", [cfg["preprocessing"].get("resize")])
+    cfg_mf_modes = exp_cfg.get("manual_features_modes", [False])
 
     for model_name in exp_cfg["models"]:
         losses = LOSS_APPLICABLE.get(model_name, ["default"])
@@ -92,12 +99,22 @@ def generate_experiment_configs(cfg: dict) -> list[dict]:
 
         applicable_losses = [l for l in losses if l in exp_cfg.get("loss_functions", ["mse"]) or l == "default"]
         applicable_pretrained = [p for p in pretrained_modes if p in exp_cfg.get("pretrained_modes", ["finetune"])]
+        if not applicable_pretrained:
+            # No config-listed mode is valid for this model — fall back to its first supported mode
+            applicable_pretrained = [pretrained_modes[0]]
 
-        for loss, pretrained, preproc, resize in product(
-            applicable_losses, applicable_pretrained, preproc_variants, model_resize_variants,
+        model_mf_options = MANUAL_FEATURES_APPLICABLE.get(model_name, [False])
+        applicable_mf = [m for m in model_mf_options if m in cfg_mf_modes]
+        if not applicable_mf:
+            applicable_mf = [False]
+
+        for loss, pretrained, preproc, resize, mf in product(
+            applicable_losses, applicable_pretrained, preproc_variants,
+            model_resize_variants, applicable_mf,
         ):
             resize_lbl = _resize_label(resize)
-            exp_id = f"{model_name}__{loss}__{pretrained}__{preproc}__{resize_lbl}"
+            mf_lbl = "mf" if mf else "nomf"
+            exp_id = f"{model_name}__{loss}__{pretrained}__{preproc}__{resize_lbl}__{mf_lbl}"
             experiments.append({
                 "id": exp_id,
                 "model": model_name,
@@ -105,6 +122,7 @@ def generate_experiment_configs(cfg: dict) -> list[dict]:
                 "pretrained": pretrained,
                 "preprocessing": preproc,
                 "resize": resize,
+                "manual_features": mf,
             })
 
     return experiments
@@ -117,6 +135,7 @@ def evaluate_on_test(
     preprocessing_variant: str = "rgb",
     pretrained_mode: str = "finetune",
     resize: "list[int] | None" = None,
+    manual_features: bool = False,
 ) -> dict:
     """Evaluate both best and last checkpoints on the test set.
 
@@ -129,6 +148,7 @@ def evaluate_on_test(
             model_name, checkpoint_dir, cfg,
             preprocessing_variant, pretrained_mode, resize,
             checkpoint_name=f"{ckpt_tag}_model.pt",
+            manual_features=manual_features,
         )
         results[ckpt_tag] = ckpt_results
     return results
@@ -142,6 +162,8 @@ def _evaluate_checkpoint(
     pretrained_mode: str,
     resize: "list[int] | None",
     checkpoint_name: str = "best_model.pt",
+    manual_features: bool = False,
+    manual_features_mask: list[bool] | None = None,
 ) -> dict:
     """Evaluate a single checkpoint on the test set, grouped by distortion level."""
     ds_cfg = cfg["dataset"]
@@ -204,6 +226,8 @@ def _evaluate_checkpoint(
                     model_name, checkpoint_dir, image, cfg,
                     preprocessing_variant, pretrained_mode, resize,
                     checkpoint_name=checkpoint_name,
+                    manual_features=manual_features,
+                    manual_features_mask=manual_features_mask,
                 )
             elif model_name == "faster_rcnn":
                 pred_boxes = _predict_fasterrcnn(
@@ -226,10 +250,15 @@ def _evaluate_checkpoint(
 def _predict_heatmap_model(
     model_name, checkpoint_dir, image, cfg, preproc_variant, pretrained_mode, resize,
     checkpoint_name="best_model.pt",
+    manual_features=False,
+    manual_features_mask=None,
 ):
     import torch
+    from zombie_detection.preprocessing import NUM_MANUAL_FEATURES
 
     in_channels = 4 if preproc_variant == "rgb_edge" else 3
+    if manual_features:
+        in_channels += NUM_MANUAL_FEATURES
     model_kwargs = {"in_channels": in_channels}
     if model_name in {"resnet18_head", "resnet50_head"}:
         model_kwargs["pretrained"] = pretrained_mode != "scratch"
@@ -241,7 +270,11 @@ def _predict_heatmap_model(
         model.load_state_dict(torch.load(str(ckpt), map_location="cpu"))
     model.eval()
 
-    transform = build_preprocessing_pipeline(cfg, variant=preproc_variant, augment=False, resize=resize)
+    transform = build_preprocessing_pipeline(
+        cfg, variant=preproc_variant, augment=False, resize=resize,
+        manual_features=manual_features,
+        manual_features_mask=manual_features_mask,
+    )
     boxes_dummy = np.zeros((0, 4), dtype=np.float32)
     image_proc, _ = transform(image, boxes_dummy)
 
@@ -290,6 +323,7 @@ def create_comparison_table(all_results: list[dict]) -> pd.DataFrame:
             "pretrained": r["pretrained"],
             "preprocessing": r["preprocessing"],
             "resize": _resize_label(r.get("resize")),
+            "manual_features": r.get("manual_features", False),
             "train_time_s": r.get("train_time", 0),
         }
         test_results = r.get("test_results", {})
@@ -374,6 +408,79 @@ def plot_comparison(df: pd.DataFrame, output_dir: Path):
         fig3.savefig(str(output_dir / "best_vs_last_checkpoint.png"), dpi=150)
         plt.close(fig3)
 
+    # ── Chart 4: manual features impact ──
+    if "manual_features" in df.columns and mixed_col in df.columns:
+        _plot_manual_features_impact(df, output_dir)
+
+
+def _plot_manual_features_impact(df: pd.DataFrame, output_dir: Path):
+    """Compare precision with vs without manual features for applicable models."""
+    mf_df = df[df["manual_features"].isin([True, False])].copy()
+    if mf_df.empty:
+        return
+
+    match_cols = ["model", "loss", "pretrained", "preprocessing", "resize"]
+    mf_true = mf_df[mf_df["manual_features"] == True].copy()
+    mf_false = mf_df[mf_df["manual_features"] == False].copy()
+
+    if mf_true.empty or mf_false.empty:
+        return
+
+    merged = pd.merge(
+        mf_true, mf_false,
+        on=match_cols, suffixes=("_mf", "_nomf"),
+        how="inner",
+    )
+    if merged.empty:
+        return
+
+    dist_groups = [c.replace("precision_best_", "") for c in mf_true.columns
+                   if c.startswith("precision_best_")]
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    x = np.arange(len(merged))
+    n_groups = len(dist_groups)
+    width = 0.8 / max(n_groups * 2, 1)
+
+    for gi, group in enumerate(dist_groups):
+        col_mf = f"precision_best_{group}_mf"
+        col_nomf = f"precision_best_{group}_nomf"
+        if col_mf not in merged.columns or col_nomf not in merged.columns:
+            continue
+        offset_mf = (gi * 2) * width
+        offset_nomf = (gi * 2 + 1) * width
+        ax.bar(x + offset_mf, merged[col_mf].values, width,
+               label=f"{group} +mf", alpha=0.85)
+        ax.bar(x + offset_nomf, merged[col_nomf].values, width,
+               label=f"{group} -mf", alpha=0.5)
+
+    labels = merged.apply(
+        lambda r: f"{r['model']}\n{r['loss_mf']}/{r['pretrained_mf']}/{r['preprocessing_mf']}",
+        axis=1,
+    )
+    ax.set_xticks(x + width * n_groups)
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+    ax.set_ylabel("Precision (IoU >= 0.5)")
+    ax.set_title("Manual Features Impact: With (+mf) vs Without (-mf)")
+    ax.legend(fontsize=7, ncol=2)
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    fig.savefig(str(output_dir / "manual_features_impact.png"), dpi=150)
+    plt.close(fig)
+
+
+def _experiment_result_json_valid(exp_output: Path) -> bool:
+    """True if experiment_result.json exists, is non-empty, and parses as JSON."""
+    path = exp_output / "experiment_result.json"
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        with open(path, "r") as f:
+            json.load(f)
+        return True
+    except (json.JSONDecodeError, OSError):
+        return False
+
 
 def _experiment_already_done(exp_output: Path) -> bool:
     """Check whether an experiment has already been trained and evaluated."""
@@ -382,8 +489,7 @@ def _experiment_already_done(exp_output: Path) -> bool:
         or (exp_output / "hog_svm.joblib").exists()
         or any(exp_output.glob("*/weights/best.pt"))  # YOLO/DETR save here
     )
-    has_results = (exp_output / "experiment_result.json").exists()
-    return has_checkpoint and has_results
+    return has_checkpoint and _experiment_result_json_valid(exp_output)
 
 
 def _load_previous_result(exp_output: Path) -> dict:
@@ -392,14 +498,15 @@ def _load_previous_result(exp_output: Path) -> dict:
         return json.load(f)
 
 
-def _check_dataset_exists(cfg: dict) -> bool:
+def _check_split_exists(cfg: dict, split: str) -> bool:
+    """Return True if a specific split directory exists and contains obs files."""
     ds_cfg = cfg["dataset"]
-    data_dir = PROJECT_ROOT / ds_cfg["base_dir"] / ds_cfg["name"]
-    for split in ("train", "val", "test"):
-        split_dir = data_dir / split
-        if not split_dir.exists() or not list(split_dir.glob("*_obs.npy")):
-            return False
-    return True
+    split_dir = PROJECT_ROOT / ds_cfg["base_dir"] / ds_cfg["name"] / split
+    return split_dir.exists() and bool(list(split_dir.glob("*_obs.npy")))
+
+
+def _check_dataset_exists(cfg: dict) -> bool:
+    return all(_check_split_exists(cfg, s) for s in ("train", "val", "test"))
 
 
 def _setup_error_log(output_dir: Path) -> logging.Logger:
@@ -428,7 +535,12 @@ def _fmt_duration(seconds: float) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Run full experiment pipeline")
     parser.add_argument("--config", default=str(PROJECT_ROOT / "zombie_detection" / "config.yaml"))
-    parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "zombie_detection" / "experiments"))
+    parser.add_argument(
+        "--output-dir",
+        default="/media/tristan-toye/ESD-USB/results",
+        help="Experiment outputs (checkpoints, experiment_result.json). "
+        "Default is USB; use --output-dir to override if the drive is not mounted.",
+    )
     parser.add_argument("--models", nargs="*", default=None, help="Only run these models (subset)")
     parser.add_argument("--force-retrain", action="store_true", help="Retrain even if checkpoint exists")
     parser.add_argument("--generate-dataset", action="store_true", help="Generate dataset if missing")
@@ -487,10 +599,11 @@ def main():
             skipped += 1
             continue
 
+        mf = exp.get("manual_features", False)
         exp_bar.write(f"\n  START {exp['id']}")
         exp_bar.write(f"        model={exp['model']}  loss={exp['loss']}  "
                        f"pretrained={exp['pretrained']}  preproc={exp['preprocessing']}  "
-                       f"resize={_resize_label(exp.get('resize'))}")
+                       f"resize={_resize_label(exp.get('resize'))}  mf={mf}")
 
         exp_failed = False
         start = time.time()
@@ -505,6 +618,7 @@ def main():
                 preprocessing_variant=exp["preprocessing"],
                 pretrained_mode=exp["pretrained"],
                 resize=exp.get("resize"),
+                manual_features=mf,
             )
         except Exception as e:
             tb = traceback.format_exc()
@@ -528,6 +642,7 @@ def main():
                     preprocessing_variant=exp["preprocessing"],
                     pretrained_mode=exp["pretrained"],
                     resize=exp.get("resize"),
+                    manual_features=mf,
                 )
             except Exception as e:
                 tb = traceback.format_exc()
@@ -604,6 +719,150 @@ def main():
         print("\n  TOP 5 (mixed distortions, best checkpoint):")
         print(top5.to_string(index=False))
         print()
+
+    # ── Feature ablation on manual-features experiments ──
+    mf_results = [r for r in all_results
+                  if r.get("manual_features") and r.get("status") == "success"]
+    if mf_results:
+        print(f"\n{'='*70}")
+        print("  FEATURE ABLATION (test-time only)")
+        print(f"{'='*70}")
+        run_feature_ablation(mf_results, cfg, output_dir)
+
+
+# ──────────────────────── Feature Ablation ────────────────────────
+
+
+def run_feature_ablation(
+    mf_experiments: list[dict],
+    cfg: dict,
+    output_dir: Path,
+):
+    """Run leave-one-out and single-feature ablation on trained manual-features models.
+
+    For each experiment, loads the best checkpoint and evaluates 8 times
+    with different channel masks on the test set.
+    """
+    from zombie_detection.preprocessing import MANUAL_FEATURE_NAMES, NUM_MANUAL_FEATURES
+
+    all_rows = []
+
+    for exp in tqdm(mf_experiments, desc="Ablation experiments", unit="exp"):
+        exp_output = output_dir / exp["id"]
+        model_name = exp["model"]
+        preproc = exp["preprocessing"]
+        pretrained = exp["pretrained"]
+        resize = exp.get("resize")
+
+        baseline_results = exp.get("test_results", {}).get("best", {})
+
+        # Leave-one-out: drop one feature at a time
+        for fi, fname in enumerate(MANUAL_FEATURE_NAMES):
+            mask = [True] * NUM_MANUAL_FEATURES
+            mask[fi] = False
+            ablation_results = _evaluate_checkpoint(
+                model_name, exp_output, cfg,
+                preproc, pretrained, resize,
+                checkpoint_name="best_model.pt",
+                manual_features=True,
+                manual_features_mask=mask,
+            )
+            for group_name, gdata in ablation_results.items():
+                if not isinstance(gdata, dict):
+                    continue
+                baseline_prec = baseline_results.get(group_name, {}).get("avg_precision", 0)
+                ablation_prec = gdata.get("avg_precision", 0)
+                all_rows.append({
+                    "experiment_id": exp["id"],
+                    "model": model_name,
+                    "ablation_type": "leave_one_out",
+                    "feature_removed": fname,
+                    "distortion_group": group_name,
+                    "baseline_precision": baseline_prec,
+                    "ablation_precision": ablation_prec,
+                    "precision_delta": ablation_prec - baseline_prec,
+                })
+
+        # Single-feature: keep only one feature at a time
+        for fi, fname in enumerate(MANUAL_FEATURE_NAMES):
+            mask = [False] * NUM_MANUAL_FEATURES
+            mask[fi] = True
+            ablation_results = _evaluate_checkpoint(
+                model_name, exp_output, cfg,
+                preproc, pretrained, resize,
+                checkpoint_name="best_model.pt",
+                manual_features=True,
+                manual_features_mask=mask,
+            )
+            for group_name, gdata in ablation_results.items():
+                if not isinstance(gdata, dict):
+                    continue
+                baseline_prec = baseline_results.get(group_name, {}).get("avg_precision", 0)
+                ablation_prec = gdata.get("avg_precision", 0)
+                all_rows.append({
+                    "experiment_id": exp["id"],
+                    "model": model_name,
+                    "ablation_type": "single_feature",
+                    "feature_kept": fname,
+                    "distortion_group": group_name,
+                    "baseline_precision": baseline_prec,
+                    "ablation_precision": ablation_prec,
+                    "precision_delta": ablation_prec - baseline_prec,
+                })
+
+    if not all_rows:
+        return
+
+    abl_df = pd.DataFrame(all_rows)
+    abl_df.to_csv(str(output_dir / "feature_ablation.csv"), index=False)
+
+    with open(output_dir / "feature_ablation_results.json", "w") as f:
+        json.dump(all_rows, f, indent=2, default=str)
+
+    _plot_ablation(abl_df, output_dir)
+    print(f"  Ablation CSV:    {output_dir / 'feature_ablation.csv'}")
+    print(f"  Ablation charts: {output_dir / 'ablation_leave_one_out.png'}")
+    print(f"                   {output_dir / 'ablation_single_feature.png'}")
+
+
+def _plot_ablation(abl_df: pd.DataFrame, output_dir: Path):
+    """Generate ablation bar charts."""
+    # ── Leave-one-out chart ──
+    loo = abl_df[abl_df["ablation_type"] == "leave_one_out"].copy()
+    if not loo.empty:
+        fig, ax = plt.subplots(figsize=(12, 6))
+        pivot = loo.pivot_table(
+            index="feature_removed", columns="distortion_group",
+            values="precision_delta", aggfunc="mean",
+        )
+        pivot.plot(kind="bar", ax=ax)
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+        ax.set_ylabel("Precision Delta (ablated - baseline)")
+        ax.set_xlabel("Feature Removed")
+        ax.set_title("Leave-One-Out Ablation: Precision Drop per Feature")
+        ax.legend(title="Distortion", fontsize=8)
+        ax.grid(True, alpha=0.3, axis="y")
+        fig.tight_layout()
+        fig.savefig(str(output_dir / "ablation_leave_one_out.png"), dpi=150)
+        plt.close(fig)
+
+    # ── Single-feature chart ──
+    sf = abl_df[abl_df["ablation_type"] == "single_feature"].copy()
+    if not sf.empty:
+        fig, ax = plt.subplots(figsize=(12, 6))
+        pivot = sf.pivot_table(
+            index="feature_kept", columns="distortion_group",
+            values="ablation_precision", aggfunc="mean",
+        )
+        pivot.plot(kind="bar", ax=ax)
+        ax.set_ylabel("Precision (single feature active)")
+        ax.set_xlabel("Feature Kept")
+        ax.set_title("Single-Feature Ablation: Precision with Each Feature Alone")
+        ax.legend(title="Distortion", fontsize=8)
+        ax.grid(True, alpha=0.3, axis="y")
+        fig.tight_layout()
+        fig.savefig(str(output_dir / "ablation_single_feature.png"), dpi=150)
+        plt.close(fig)
 
 
 if __name__ == "__main__":

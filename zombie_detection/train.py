@@ -521,12 +521,14 @@ def train_model(
     preprocessing_variant: str = "rgb",
     pretrained_mode: str = "finetune",
     resize: "list[int] | None" = "from_config",
+    manual_features: bool = False,
 ) -> dict:
     """Unified entry point: dispatches to the right training loop.
 
     Args:
         resize: [h, w] to resize images, None to keep native resolution,
                 or "from_config" to read from cfg["preprocessing"]["resize"].
+        manual_features: whether to append handcrafted feature channels.
     """
     if output_dir is None:
         output_dir = PROJECT_ROOT / "zombie_detection" / "checkpoints" / model_name
@@ -536,9 +538,13 @@ def train_model(
     if resize == "from_config":
         resize = cfg["preprocessing"].get("resize")
 
-    # Save the resize setting used for this experiment so inference can match
+    # Save settings used for this experiment so inference can match
     with open(output_dir / "train_settings.json", "w") as f:
-        json.dump({"resize": resize, "preprocessing_variant": preprocessing_variant}, f)
+        json.dump({
+            "resize": resize,
+            "preprocessing_variant": preprocessing_variant,
+            "manual_features": manual_features,
+        }, f)
 
     # Self-training models (YOLO, RT-DETR, classical)
     if model_name in {"yolov8n", "yolov11n", "rt_detr"}:
@@ -553,8 +559,14 @@ def train_model(
 
     target_mode = get_target_mode(model_name)
     augment = True
-    transform = build_preprocessing_pipeline(cfg, variant=preprocessing_variant, augment=augment, resize=resize)
-    val_transform = build_preprocessing_pipeline(cfg, variant=preprocessing_variant, augment=False, resize=resize)
+    transform = build_preprocessing_pipeline(
+        cfg, variant=preprocessing_variant, augment=augment,
+        resize=resize, manual_features=manual_features,
+    )
+    val_transform = build_preprocessing_pipeline(
+        cfg, variant=preprocessing_variant, augment=False,
+        resize=resize, manual_features=manual_features,
+    )
 
     # Heatmap size matches actual image dimensions after preprocessing
     if resize is not None:
@@ -578,7 +590,10 @@ def train_model(
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate, num_workers=0)
 
     # Build model
+    from zombie_detection.preprocessing import NUM_MANUAL_FEATURES
     in_channels = 4 if preprocessing_variant == "rgb_edge" else 3
+    if manual_features:
+        in_channels += NUM_MANUAL_FEATURES
     model_kwargs = {"in_channels": in_channels}
 
     if model_name in {"resnet18_head", "resnet50_head"}:
@@ -614,6 +629,7 @@ def main():
     parser.add_argument("--pretrained", default="finetune", choices=["frozen", "finetune", "scratch"])
     parser.add_argument("--resize", default="from_config", help="'from_config', 'none', or 'H,W' e.g. '360,640'")
     parser.add_argument("--output-dir", default=None, help="Output directory for checkpoints")
+    parser.add_argument("--manual-features", action="store_true", help="Append handcrafted feature channels")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -634,6 +650,7 @@ def main():
         loss_name=args.loss,
         preprocessing_variant=args.preprocessing,
         pretrained_mode=args.pretrained,
+        manual_features=args.manual_features,
     )
 
     results_path = (out or PROJECT_ROOT / "zombie_detection" / "checkpoints" / args.model) / "results.json"
