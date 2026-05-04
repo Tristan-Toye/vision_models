@@ -53,7 +53,7 @@ class RTDETRDetector:
         )
         return results
 
-    def predict(self, image: np.ndarray, conf: float = 0.25) -> np.ndarray:
+    def predict(self, image: np.ndarray, conf: float = 0.25, **predict_kwargs) -> np.ndarray:
         """Run inference on a single image (H, W, 3) uint8.
 
         Returns (N, 4) array of [x, y, w, h] in pixel coords.
@@ -61,7 +61,7 @@ class RTDETRDetector:
         if self.model is None:
             self._load_model()
 
-        results = self.model.predict(image, conf=conf, verbose=False)
+        results = self.model.predict(image, conf=conf, verbose=False, **predict_kwargs)
 
         if len(results) == 0 or len(results[0].boxes) == 0:
             return np.zeros((0, 4), dtype=np.float32)

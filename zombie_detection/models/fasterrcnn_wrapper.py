@@ -6,9 +6,50 @@ detection dataset. Supports freezing the backbone for transfer learning.
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torchvision
 from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+
+
+def _set_backbone_input_channels(model: nn.Module, in_channels: int, pretrained: bool) -> None:
+    """Replace ResNet-FPN backbone conv1 when input channel count != 3."""
+    if in_channels == 3:
+        return
+    old = model.backbone.body.conv1
+    new_conv = nn.Conv2d(
+        in_channels,
+        old.out_channels,
+        kernel_size=old.kernel_size,
+        stride=old.stride,
+        padding=old.padding,
+        bias=False,
+    )
+    with torch.no_grad():
+        if pretrained:
+            n_copy = min(old.in_channels, in_channels)
+            new_conv.weight[:, :n_copy] = old.weight[:, :n_copy]
+            if in_channels > n_copy:
+                mean_ch = old.weight.mean(dim=1, keepdim=True)
+                new_conv.weight[:, n_copy:in_channels] = mean_ch.expand(
+                    -1, in_channels - n_copy, -1, -1
+                )
+        else:
+            nn.init.kaiming_normal_(new_conv.weight, mode="fan_out", nonlinearity="relu")
+    model.backbone.body.conv1 = new_conv
+
+
+def _align_rcnn_transform_norm(model: nn.Module, in_channels: int) -> None:
+    """Extend Faster R-CNN ImageNet mean/std lists when backbone takes != 3 channels."""
+    t = model.transform
+    n = len(t.image_mean)
+    if in_channels <= n:
+        return
+    extra = in_channels - n
+    base_m = sum(t.image_mean) / n
+    base_s = sum(t.image_std) / n
+    t.image_mean = list(t.image_mean) + [base_m] * extra
+    t.image_std = list(t.image_std) + [base_s] * extra
 
 
 class FasterRCNNDetector(torch.nn.Module):
@@ -19,6 +60,7 @@ class FasterRCNNDetector(torch.nn.Module):
         pretrained: bool = True,
         freeze_backbone: bool = False,
         num_classes: int = 2,
+        in_channels: int = 3,
         **kwargs,
     ):
         super().__init__()
@@ -28,6 +70,9 @@ class FasterRCNNDetector(torch.nn.Module):
 
         in_features = self.model.roi_heads.box_predictor.cls_score.in_features
         self.model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+        _set_backbone_input_channels(self.model, in_channels, pretrained)
+        _align_rcnn_transform_norm(self.model, in_channels)
 
         if freeze_backbone:
             for param in self.model.backbone.parameters():
@@ -42,7 +87,7 @@ class FasterRCNNDetector(torch.nn.Module):
         conf: float = 0.5,
         device: str = "cpu",
     ) -> np.ndarray:
-        """Run inference on a single image (H, W, 3) uint8.
+        """Run inference on a single image (H, W, C) uint8 with C == model input channels.
 
         Returns (N, 4) array of [x, y, w, h] in pixel coords.
         """

@@ -34,14 +34,26 @@ class HOGSVMDetector:
     ):
         self.window_h, self.window_w = window_size
         self.step_size = step_size
-        self.hog_params = {
-            "winSize": (self.window_w, self.window_h),
-            "blockSize": (hog_block_size[0] * hog_cell_size[0], hog_block_size[1] * hog_cell_size[1]),
-            "blockStride": (hog_cell_size[0], hog_cell_size[1]),
-            "cellSize": hog_cell_size,
-            "nbins": hog_nbins,
-        }
-        self.hog = cv2.HOGDescriptor(**self.hog_params)
+        # OpenCV 4.8+ Python bindings reject keyword args for HOGDescriptor; use positional ctor.
+        _block_size = (
+            hog_block_size[0] * hog_cell_size[0],
+            hog_block_size[1] * hog_cell_size[1],
+        )
+        _block_stride = (hog_cell_size[0], hog_cell_size[1])
+        _cell_size = hog_cell_size
+        # OpenCV requires (winSize - blockSize) % blockStride == 0. Our bbox-sized
+        # window (29x31) does not satisfy that for the default 8x8 blocks and 4x4 stride,
+        # so we round the *HOG feature window* up to a compatible size.
+        def _round_up_win(win: int, block: int, stride: int) -> int:
+            if win < block:
+                return block
+            rem = (win - block) % stride
+            return win if rem == 0 else win + (stride - rem)
+
+        self.hog_win_w = _round_up_win(self.window_w, _block_size[0], _block_stride[0])
+        self.hog_win_h = _round_up_win(self.window_h, _block_size[1], _block_stride[1])
+        _win_size = (self.hog_win_w, self.hog_win_h)
+        self.hog = cv2.HOGDescriptor(_win_size, _block_size, _block_stride, _cell_size, hog_nbins)
         self.scaler = StandardScaler()
         self.svm = LinearSVC(C=1.0, max_iter=5000)
         self.is_trained = False
@@ -53,7 +65,7 @@ class HOGSVMDetector:
         """Extract HOG features from a single patch."""
         if len(patch.shape) == 3:
             patch = cv2.cvtColor(patch, cv2.COLOR_RGB2GRAY)
-        patch = cv2.resize(patch, (self.window_w, self.window_h))
+        patch = cv2.resize(patch, (self.hog_win_w, self.hog_win_h))
         return self.hog.compute(patch).flatten()
 
     def train_from_dataset(

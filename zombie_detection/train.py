@@ -395,12 +395,18 @@ def train_yolo_or_detr(
     data_dir = PROJECT_ROOT / ds_cfg["base_dir"] / ds_cfg["name"]
 
     # Export to YOLO format
-    yolo_dir = output_dir / "yolo_dataset"
+    # Shared cache across YOLOv8/YOLOv11/RT-DETR experiments to avoid duplicating disk usage.
+    # Store alongside the experiment results root (e.g. USB) so it doesn't fill the SSD.
+    results_root = output_dir.parent
+    yolo_dir = results_root / "_shared_yolo_dataset" / ds_cfg["name"]
+    resize_hw = cfg.get("preprocessing", {}).get("resize")
     if hasattr(detector, "export_dataset_to_yolo_format"):
         yaml_path = detector.export_dataset_to_yolo_format(
             data_dir, yolo_dir,
             screen_w=cfg["screen"]["width"],
             screen_h=cfg["screen"]["height"],
+            image_format="png",
+            resize_hw=tuple(resize_hw) if resize_hw is not None else (360, 640),
         )
     else:
         # RT-DETR uses same YOLO format
@@ -410,6 +416,8 @@ def train_yolo_or_detr(
             data_dir, yolo_dir,
             screen_w=cfg["screen"]["width"],
             screen_h=cfg["screen"]["height"],
+            image_format="png",
+            resize_hw=tuple(resize_hw) if resize_hw is not None else (360, 640),
         )
 
     results = detector.train(
@@ -443,6 +451,8 @@ def train_classical(
         detector.save(str(output_dir / "hog_svm.joblib"))
     elif model_name == "template_match":
         detector.extract_template_from_dataset(train_dir, bbox_w=bbox_w, bbox_h=bbox_h)
+        if detector.template is not None:
+            np.save(str(output_dir / "template_gray.npy"), detector.template)
 
     # Evaluate on val set
     val_dir = PROJECT_ROOT / ds_cfg["base_dir"] / ds_cfg["name"] / "val"
@@ -600,15 +610,13 @@ def train_model(
         model_kwargs["pretrained"] = pretrained_mode != "scratch"
         model_kwargs["freeze_backbone"] = pretrained_mode == "frozen"
 
-    model = get_model(model_name, **model_kwargs)
-
     if model_name == "faster_rcnn":
-        model_kwargs_rcnn = {
-            "pretrained": pretrained_mode != "scratch",
-            "freeze_backbone": pretrained_mode == "frozen",
-        }
-        model = get_model(model_name, **model_kwargs_rcnn)
+        model_kwargs["pretrained"] = pretrained_mode != "scratch"
+        model_kwargs["freeze_backbone"] = pretrained_mode == "frozen"
+        model = get_model(model_name, **model_kwargs)
         return train_fasterrcnn(model, train_loader, val_loader, cfg, output_dir, model_name)
+
+    model = get_model(model_name, **model_kwargs)
 
     # Heatmap models
     loss_fn = get_loss_fn(loss_name)

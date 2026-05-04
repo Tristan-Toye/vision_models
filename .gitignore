@@ -4,8 +4,6 @@ __pycache__/
 *$py.class
 
 
-
-
 zombie_detection/data/*
 *.pt
 *.deb
@@ -213,3 +211,21 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Synced submission weights (large; regenerate with deployment/sync_submission_models.py)
+submission_models/rt_detr/
+submission_models/yolov11n/
+submission_models/yolov8n/
+submission_models/heatmap_cnn/
+submission_models/resnet18_head/
+submission_models/template_match/
+
+# LaTeX experiment report build artifacts
+zombie_detection/reports/*.pdf
+zombie_detection/reports/*.aux
+zombie_detection/reports/*.log
+zombie_detection/reports/*.out
+zombie_detection/reports/*.toc
+zombie_detection/reports/figures/*.png
+zombie_detection/reports/figures/summary_tables.tex
+zombie_detection/reports/figures/_summary_best_per_model.csv

@@ -1,0 +1,13 @@
+Test-set precision (precision_best_mixed), best checkpoint per model family.
+Source: experiments matrix / comparison.csv from the RL-KAZ evaluation run.
+
+Rank  Model id (submission_models folder)  mixed_test_precision  Notes
+----  -----------------------------------  --------------------  -----
+1     rt_detr                              0.9897
+2     yolov11n                             0.9876
+3     heatmap_cnn                          0.9848                mse, rgb, MF, 360x640
+4     resnet18_head                        0.9833                mse, grayscale, 360x640, no MF
+5     yolov8n                              0.9813
+6     template_match                       0.1263                classical baseline (same low row as failed RCNN in that run)
+
+Use active_model in submission_config.yaml to pick one; paths are fixed per class under submission_models/<name>/.

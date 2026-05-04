@@ -186,41 +186,51 @@ def _evaluate_checkpoint(
             else:
                 return {"error": f"{checkpoint_name} not found"}
 
+    # Pre-scan test files once (avoid 5x full scans for distortion groups)
+    obs_files_all = sorted(test_dir.glob("*_obs.npy"))
+    parsed = []
+    for obs_path in obs_files_all:
+        stem = obs_path.name.replace("_obs.npy", "")
+        parts = stem.split("_d")
+        if len(parts) < 2:
+            continue
+        try:
+            file_level = int(parts[-1])
+        except ValueError:
+            continue
+        box_path = test_dir / f"{stem}_zombies.npy"
+        if not box_path.exists():
+            continue
+        parsed.append((file_level, obs_path, box_path))
+
+    # For Ultralytics models, load detector once per checkpoint
+    detector = None
+    if model_name in SELF_TRAINING_MODELS:
+        detector = get_model(model_name, checkpoint=str(ckpt_path))
+
     distortion_results = {}
     for group in cfg["experiments"]["distortion_eval_groups"]:
         group_name = group["name"]
         group_levels = group["levels"]
 
         precisions = []
-        obs_files = sorted(test_dir.glob("*_obs.npy"))
-
-        for obs_path in tqdm(
-            obs_files,
+        for file_level, obs_path, box_path in tqdm(
+            parsed,
             desc=f"    Test [{checkpoint_name.replace('_model.pt','')}] {group_name}",
             leave=False, unit="img",
         ):
-            stem = obs_path.name.replace("_obs.npy", "")
-            parts = stem.split("_d")
-            if len(parts) < 2:
-                continue
-            try:
-                file_level = int(parts[-1])
-            except ValueError:
-                continue
-
             if file_level not in group_levels:
-                continue
-
-            box_path = test_dir / f"{stem}_zombies.npy"
-            if not box_path.exists():
                 continue
 
             image = np.load(str(obs_path))
             gt_boxes = np.load(str(box_path))
 
             if model_name in SELF_TRAINING_MODELS:
-                detector = get_model(model_name, checkpoint=str(ckpt_path))
-                pred_boxes = detector.predict(image)
+                # Reuse loaded model. Only Ultralytics models accept predict kwargs like max_det.
+                if model_name in {"yolov8n", "yolov11n", "rt_detr"}:
+                    pred_boxes = detector.predict(image, max_det=100)
+                else:
+                    pred_boxes = detector.predict(image)
             elif model_name in HEATMAP_MODELS:
                 pred_boxes = _predict_heatmap_model(
                     model_name, checkpoint_dir, image, cfg,
@@ -232,6 +242,7 @@ def _evaluate_checkpoint(
             elif model_name == "faster_rcnn":
                 pred_boxes = _predict_fasterrcnn(
                     checkpoint_dir, image, cfg, pretrained_mode, resize,
+                    preprocessing_variant=preprocessing_variant,
                     checkpoint_name=checkpoint_name,
                 )
             else:
@@ -293,15 +304,24 @@ def _predict_heatmap_model(
 
 def _predict_fasterrcnn(
     checkpoint_dir, image, cfg, pretrained_mode, resize,
+    preprocessing_variant: str = "rgb",
     checkpoint_name="best_model.pt",
 ):
     import torch
 
-    transform = build_preprocessing_pipeline(cfg, variant="rgb", augment=False, resize=resize)
+    transform = build_preprocessing_pipeline(
+        cfg, variant=preprocessing_variant, augment=False, resize=resize,
+    )
     boxes_dummy = np.zeros((0, 4), dtype=np.float32)
     image_proc, _ = transform(image, boxes_dummy)
 
-    model = get_model("faster_rcnn", pretrained=pretrained_mode != "scratch", freeze_backbone=False)
+    in_ch = 4 if preprocessing_variant == "rgb_edge" else 3
+    model = get_model(
+        "faster_rcnn",
+        pretrained=pretrained_mode != "scratch",
+        freeze_backbone=False,
+        in_channels=in_ch,
+    )
     ckpt = checkpoint_dir / checkpoint_name
     if ckpt.exists():
         model.load_state_dict(torch.load(str(ckpt), map_location="cpu"))
@@ -454,8 +474,9 @@ def _plot_manual_features_impact(df: pd.DataFrame, output_dir: Path):
         ax.bar(x + offset_nomf, merged[col_nomf].values, width,
                label=f"{group} -mf", alpha=0.5)
 
+    # loss/pretrained/preprocessing are part of the merge keys, so they do NOT get suffixes.
     labels = merged.apply(
-        lambda r: f"{r['model']}\n{r['loss_mf']}/{r['pretrained_mf']}/{r['preprocessing_mf']}",
+        lambda r: f"{r['model']}\n{r['loss']}/{r['pretrained']}/{r['preprocessing']}",
         axis=1,
     )
     ax.set_xticks(x + width * n_groups)
@@ -482,14 +503,20 @@ def _experiment_result_json_valid(exp_output: Path) -> bool:
         return False
 
 
+def _experiment_has_checkpoint(exp_output: Path) -> bool:
+    """True if any model checkpoint artifact exists for this experiment."""
+    return (
+        (exp_output / "best_model.pt").exists()
+        or (exp_output / "last_model.pt").exists()
+        or (exp_output / "hog_svm.joblib").exists()
+        or any(exp_output.glob("*/weights/best.pt"))  # YOLO/DETR
+        or any(exp_output.glob("*/weights/last.pt"))
+    )
+
+
 def _experiment_already_done(exp_output: Path) -> bool:
     """Check whether an experiment has already been trained and evaluated."""
-    has_checkpoint = (
-        (exp_output / "best_model.pt").exists()
-        or (exp_output / "hog_svm.joblib").exists()
-        or any(exp_output.glob("*/weights/best.pt"))  # YOLO/DETR save here
-    )
-    return has_checkpoint and _experiment_result_json_valid(exp_output)
+    return _experiment_has_checkpoint(exp_output) and _experiment_result_json_valid(exp_output)
 
 
 def _load_previous_result(exp_output: Path) -> dict:
@@ -597,6 +624,61 @@ def main():
             result = _load_previous_result(exp_output)
             all_results.append(result)
             skipped += 1
+            continue
+
+        # If a checkpoint exists but results are missing/invalid, run TEST only.
+        if (
+            not args.force_retrain
+            and _experiment_has_checkpoint(exp_output)
+            and not _experiment_result_json_valid(exp_output)
+        ):
+            mf = exp.get("manual_features", False)
+            exp_bar.write(f"\n  TEST-ONLY {exp['id']}  (checkpoint exists, no valid results)")
+            exp_bar.write(f"        model={exp['model']}  loss={exp['loss']}  "
+                          f"pretrained={exp['pretrained']}  preproc={exp['preprocessing']}  "
+                          f"resize={_resize_label(exp.get('resize'))}  mf={mf}")
+
+            exp_failed = False
+            test_results = {}
+            try:
+                test_results = evaluate_on_test(
+                    model_name=exp["model"],
+                    checkpoint_dir=exp_output,
+                    cfg=cfg,
+                    preprocessing_variant=exp["preprocessing"],
+                    pretrained_mode=exp["pretrained"],
+                    resize=exp.get("resize"),
+                    manual_features=mf,
+                )
+            except Exception as e:
+                tb = traceback.format_exc()
+                exp_bar.write(f"  TEST FAILED: {e}")
+                error_logger.error(
+                    f"TEST FAILED (TEST-ONLY) | {exp['id']}\n{tb}\n{'─'*60}"
+                )
+                test_results = {"error": str(e)}
+                exp_failed = True
+
+            result = {
+                **exp,
+                "status": "failed" if exp_failed else "success",
+                "train_time": 0.0,
+                "train_results": {"skipped": "checkpoint_exists"},
+                "test_results": test_results,
+            }
+            all_results.append(result)
+
+            if not exp_failed:
+                with open(exp_output / "experiment_result.json", "w") as f:
+                    json.dump(result, f, indent=2, default=str)
+                succeeded += 1
+                exp_bar.write(f"  DONE  {exp['id']}  (test-only)")
+            else:
+                failed_experiments.append(exp["id"])
+
+            with open(output_dir / "experiments_results.json", "w") as f:
+                json.dump(all_results, f, indent=2, default=str)
+            exp_bar.set_postfix(ok=succeeded, fail=len(failed_experiments), skip=skipped)
             continue
 
         mf = exp.get("manual_features", False)
