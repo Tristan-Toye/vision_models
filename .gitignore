@@ -212,13 +212,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Synced submission weights (large; regenerate with deployment/sync_submission_models.py)
-submission_models/rt_detr/
-submission_models/yolov11n/
-submission_models/yolov8n/
-submission_models/heatmap_cnn/
-submission_models/resnet18_head/
-submission_models/template_match/
+
 
 # LaTeX experiment report build artifacts
 zombie_detection/reports/*.pdf
