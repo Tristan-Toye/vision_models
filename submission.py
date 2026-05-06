@@ -1,19 +1,8 @@
 """Submission file for Task 3 (multi agent KAZ).
 
-Zombie detection loads a **deployment** pipeline from ``submission_config.yaml``
-(next to this file). Set ``active_model`` to one of the registered keys; each
-model class uses weights under ``submission_models/<name>/`` (see
-``zombie_detection/realtime/deployment/sync_submission_models.py``).
-
-``submission_config.yaml`` field ``device: auto`` picks CUDA when available, else
-Apple MPS when available, else CPU. Use ``device: cpu`` or ``device: cuda`` to
-force.
-
-To swap models manually instead of YAML, you can replace the loader call in
-``CustomZombieDetectorFunction.__init__`` with a direct import, e.g.::
-
-    from zombie_detection.realtime.deployment import RTDETRDeploymentPipeline
-    self._pipeline = RTDETRDeploymentPipeline(device=\"auto\", conf_threshold=0.35)
+Runtime is fixed to a single model for deployment simplicity:
+**YOLOv11n** (Ultralytics) with weights shipped in-repo under
+``zombie_detection/realtime/runtime_models/yolov11n/``.
 """
 from __future__ import annotations
 
@@ -29,8 +18,6 @@ from pettingzoo.utils.env import AgentID, ObsType
 PACKAGE_DIR = str(Path(__file__).resolve().parent)
 if PACKAGE_DIR not in sys.path:
     sys.path.insert(0, PACKAGE_DIR)
-
-SUBMISSION_CONFIG = Path(__file__).resolve().parent / "submission_config.yaml"
 
 
 class CustomWrapper(BaseWrapper):
@@ -54,17 +41,17 @@ class CustomPredictFunction(Callable):
 
 
 class CustomZombieDetectorFunction(Callable):
-    """Detect zombies using the pipeline selected in ``submission_config.yaml``.
+    """Detect zombies using the fixed runtime pipeline (YOLOv11n).
 
     Returns ``(N, 4)`` float32 ``[x, y, width, height]`` in screen pixels, sorted
     by confidence (evaluation contract).
     """
 
     def __init__(self, env: gymnasium.Env):
-        from zombie_detection.realtime.deployment import load_pipeline_from_submission_config
+        from zombie_detection.yolov11n import YOLOv11nPipeline
 
         self._env = env
-        self._pipeline = load_pipeline_from_submission_config(SUBMISSION_CONFIG)
+        self._pipeline = YOLOv11nPipeline(device="auto", conf_threshold=0.35)
 
     def __call__(self, observation, *args, **kwargs):
         """Return ``(N,4)`` float32 ``[x,y,w,h]``; empty array if no detections."""
