@@ -1,0 +1,435 @@
+% Zombie detection experiment report (RL-KAZ) — Task~3 vision / central detection supplement
+% Build figures first:  python zombie_detection/reports/build_report_assets.py --results-root /path/to/results
+% Then compile (from this directory):  pdflatex experiment_report.tex  (twice for refs)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+\graphicspath{{figures/}}
+
+% Auto-generated numeric tables (run build_report_assets.py)
+\IfFileExists{figures/summary_tables.tex}{%
+  \input{figures/summary_tables.tex}%
+}{%
+  \typeout{No figures/summary_tables.tex — run build_report_assets.py first.}%
+  \providecommand{\SummaryBestMixedTable}{\emph{Run \texttt{build\_report\_assets.py} to generate tables.}}%
+  \providecommand{\SummaryTopFiveTable}{\emph{Run \texttt{build\_report\_assets.py} to generate tables.}}%
+}
+
+\title{Zombie Detection Experiments (Task~3)\\\large Model Comparison, Robustness to Distortion, and Feature Ablations}
+\author{RL-KAZ project}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This document is the \textbf{Task~3} experimental supplement for the course project: supervised bounding-box localization of zombies from \texttt{rgb\_array} observations in Knights, Archers and Zombies (KAZ) under controlled visual distortion, using the PettingZoo simulator interface.
+We compare heatmap regressors, ImageNet-transfer heads, Ultralytics YOLO and RT-DETR, a Faster~R-CNN baseline, and classical detectors; we report held-out test precision stratified by distortion, training dynamics, and manual-feature ablations.
+The first part of the project PDF should remain self-contained for Tasks~1--2; detailed learning-curve and ablation plots are deferred to Appendix~A so this section stays short enough to merge under the global 10-page body limit (references excluded).
+\end{abstract}
+
+\section{Submission metadata (full project report)}
+\label{sec:meta}
+
+\paragraph{Department machine path (replace before submission).}
+Per the assignment brief, the merged PDF must state where \textbf{all task code and tournament agents} live on the departmental computer.
+We cannot know your account path here; insert the verified absolute path after upload, e.g.\ \texttt{\textless KU\_LOGIN\textgreater/ml-project-2025-2026/RL-KAZ} (replace with the actual directory you tested on the dept.\ machines).
+
+\paragraph{Time accounting (replace with real numbers).}
+The brief requires \textbf{per-person} effort and its split across tasks.
+\begin{table}[htbp]
+  \centering
+  \caption{Illustrative template --- replace names and hours with real values in the final merged report.}
+  \begin{tabular}{@{}llp{6.5cm}@{}}
+    \toprule
+    \textbf{Name} & \textbf{Total (h)} & \textbf{Split (Task 1 / 2 / 3 / other)} \\
+    \midrule
+    Member A & -- & -- \\
+    Member B & -- & -- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Task numbering.}
+Course Tasks~1--2 (literature; matrix games) are documented elsewhere in the master report.
+\textbf{This file covers Task~3} (KAZ agents and vision), specifically the \emph{central zombie-detection} evaluation pipeline (\texttt{zombie\_detection/}), not the RL tournament agent itself.
+
+\section{Introduction and related work}
+The assignment requires a vision module that tolerates combined distortions on pixel observations~\citep{mlproject2026}.
+Systematic studies of CNN robustness under common image corruptions motivate stress-testing detectors beyond i.i.d.\ pixels~\citep{hendrycks2019benchmarking}.
+KAZ is provided in PettingZoo~\citep{terry2021pettingzoo}; observations are generated in code with the parallel API and optional wrappers for distortion (see \texttt{zombie\_detection/generate\_dataset.py}).
+Multi-agent deep RL often builds on shared environment APIs and pixel observations~\citep{hernandez2019marl}; PettingZoo documents visual policies for KAZ as a worked example~\citep{pettingzoo_kaz,sb3_kaz_tutorial}.
+There is \textbf{no} dedicated peer-reviewed benchmark for ``object detection on KAZ pixels''; we therefore ground detector choices in surveys and canonical architectures~\citep{liu2020deep,lin2014coco,ren2015fasterrcnn,zhao2024rtdetr} and cite PettingZoo / MARL references where the simulator and training recipes are concerned~\citep{terry2021pettingzoo,pettingzoo_kaz}.
+
+\section{Research questions and design choices}
+\label{sec:rq}
+We phrase engineering decisions as research questions (assignment criterion).
+
+\begin{description}[style=nextline,font=\normalfont\bfseries]
+  \item[RQ1 (detector family)] Which detector families maximize test precision on the \texttt{mixed} distortion pool while staying within our training/resolution constraints?
+  \item[RQ2 (transfer vs scratch)] When is ImageNet/COCO initialization preferable to training from scratch for small, stylized sprites?
+  \item[RQ3 (manual channels)] Do optional handcrafted channels (edges, HSV saturation, LBP) improve heatmap-based detectors under strong distortion, and are they complementary?
+  \item[RQ4 (baselines)] How far behind are classical and two-stage baselines relative to modern one-stage and transformer detectors under the same evaluation code?
+\end{description}
+
+\noindent\textbf{Answers (supported by Secs.~\ref{sec:dataset}--\ref{sec:results}).}
+For RQ1--2, one-stage Ultralytics models and RT-DETR dominate the matrix on \texttt{precision\_best\_mixed} (Table~\ref{tab:bestmixed}), consistent with strong transfer from large-scale detection pretraining~\citep{pan2010transfer,yosinski2014transfer} and with mainstream one-stage / DETR-style designs~\citep{redmon2018yolov3,ultralytics_yolo_docs,zhao2024rtdetr,carion2020detr}.
+Heatmap models with manual features remain competitive when Jetson-like memory limits matter (Table~\ref{tab:bestmixed} and Appendix~A).
+For RQ3, leave-one-out and single-feature ablations show channels are complementary (Appendix~A, Fig.~\ref{fig:ablation_loo}--\ref{fig:ablation_sf}), consistent with classical texture cues (e.g.\ LBP~\citep{ojala2002lbp}) remaining informative under appearance shift when fused with learned representations.
+For RQ4, HOG+SVM, template matching, and our Faster~R-CNN configuration yield very low mixed precision in the logged campaign (Table~\ref{tab:bestmixed}), i.e.\ they act as negative controls unless substantially retuned.
+
+\section{Dataset, splits, and simulator protocol}
+\label{sec:dataset}
+\textbf{Splits.} Train / validation / test follow standard supervised practice: parameters updated on train only; validation monitors loss and precision each epoch; test is held out for distortion-stratified metrics in \texttt{comparison.csv}.
+
+\textbf{Sizes.} From \texttt{config.yaml}: \texttt{num\_train\_examples}${}=8000$, \texttt{num\_val\_examples}${}=1000$, \texttt{num\_test\_examples}${}=1000$ base frames per split; each sample stores an RGB frame and zombie boxes in screen coordinates.
+
+\textbf{Generation.} \texttt{generate\_dataset.py} steps KAZ with PettingZoo~\citep{terry2021pettingzoo}, applies configured distortion levels, and writes \texttt{rgb\_array} at $1280\times720$.
+Training loaders (\texttt{train.py}) shuffle train, disable shuffle on validation, and apply stochastic augmentation only on the train branch of \texttt{build\_preprocessing\_pipeline} (standard practice for improving generalization~\citep{shorten2019augmentation}).
+
+\textbf{Resolution paths.} Heatmap / ResNet / Faster~R-CNN consume NumPy packs resized to $360\times640$ in the pipeline; YOLO and RT-DETR use an exported Ultralytics dataset at the same training resolution (\texttt{YOLODetector.export\_dataset\_to\_yolo\_format}).
+
+\section{Evaluation metric (reproducible)}
+\label{sec:metric}
+Each frame has ground-truth axis-aligned boxes $(l,t,w,h)$ in pixels.
+For predicted boxes $\mathcal{P}$ and ground truth $\mathcal{G}$, we use greedy one-to-one matching in prediction order: a prediction matches an unmatched ground-truth box if $\mathrm{IoU}\ge0.5$.
+With $\mathrm{IoU}(a,b)=\lvert a\cap b\rvert/\lvert a\cup b\rvert$ and $M$ the number of matched pairs,
+\begin{equation}
+  \text{precision}_{\mathrm{IoU0.5}} =
+  \begin{cases}
+    1 & \text{if }|\mathcal{G}|=0\text{ and }|\mathcal{P}|=0,\\
+    0 & \text{if }|\mathcal{G}|=0\text{ and }|\mathcal{P}|>0,\\
+    M/|\mathcal{G}| & \text{otherwise.}
+  \end{cases}
+\end{equation}
+This matches \texttt{compute\_precision\_iou} in \texttt{zombie\_detection/train.py} (default threshold $0.5$).
+The $\mathrm{IoU}\!\ge\!0.5$ cutoff matches the ``PASCAL-style'' overlap rule widely reused in detection benchmarks~\citep{everingham2010pascal,lin2014coco}; our scalar is a per-frame fraction of zombies matched (not mean average precision over a full COCO-style protocol).
+Distortion slices follow filename tags and \texttt{distortion\_eval\_groups} (\texttt{none}, \texttt{low}, \texttt{high}, \texttt{extreme}, \texttt{mixed}).
+
+\section{Models (families, pointers, and citations)}
+\label{sec:models}
+Table~\ref{tab:refs} summarizes official sites and primary references; implementation follows \texttt{zombie\_detection/models/} and \texttt{config.yaml}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Detector families used in experiments: official resources and papers.}
+  \label{tab:refs}
+  \small
+  \begin{tabular}{@{}p{3.1cm}p{4.2cm}p{6.4cm}@{}}
+    \toprule
+    \textbf{Family} & \textbf{Website / code} & \textbf{Paper / reference} \\
+    \midrule
+    Heatmap CNN / ResNet head & (project code) & U-Net-style dense prediction~\citep{ronneberger2015unet}; ResNet~\citep{he2016resnet}; focal loss option~\citep{lin2017focal}. \\
+    YOLOv8n / YOLOv11n & \url{https://docs.ultralytics.com} & YOLO family~\citep{redmon2017yolo9000,redmon2018yolov3}; Ultralytics docs~\citep{ultralytics_yolo_docs}; independent YOLO11 overview~\citep{khanam2024yolo11}. \\
+    RT-DETR & \url{https://docs.ultralytics.com/models/rtdetr/} & RT-DETR~\citep{zhao2024rtdetr}; DETR family~\citep{carion2020detr}. \\
+    Faster R-CNN & \url{https://pytorch.org/vision/stable/models.html} & Faster R-CNN~\citep{ren2015fasterrcnn}. \\
+    HOG+SVM & OpenCV / scikit-learn & HOG~\citep{dalal2005hog}. \\
+    Template match & (project code) & Classical template matching (e.g.\ survey texts such as~\citealp{szeliski2010cv}). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\noindent\textbf{Axis of the matrix.} Losses (heatmap), preprocessing (RGB / grayscale / edges), manual features (heatmap and ResNet heads), and pretrained-vs-scratch modes follow \texttt{PRETRAINED\_APPLICABLE} and the Cartesian product in \texttt{evaluate\_models.py}.
+
+\section{Aggregate test results}
+\label{sec:results}
+Table~\ref{tab:bestmixed} lists best \texttt{precision\_best\_mixed} per model type; Table~\ref{tab:topfive} expands distortion columns for the top configurations.
+Figure~\ref{fig:bar} summarizes the same ranking.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Best test precision on the \texttt{mixed} distortion pool, per model type (generated from your \texttt{comparison.csv}).}
+  \label{tab:bestmixed}
+  \resizebox{\linewidth}{!}{\SummaryBestMixedTable}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Top experiments by \texttt{precision\_best\_mixed}. Columns n/l/h/e/m denote test groups none / low / high / extreme / mixed.}
+  \label{tab:topfive}
+  \resizebox{\linewidth}{!}{\SummaryTopFiveTable}
+\end{table}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.92\linewidth]{summary_best_mixed_per_model.png}
+  \caption{Maximum mixed-test precision per model over all matrix configurations.}
+  \label{fig:bar}
+\end{figure}
+
+\section{Real-time benchmark (accuracy vs latency)}
+\label{sec:realtime}
+While Tables~\ref{tab:bestmixed}--\ref{tab:topfive} summarize \emph{offline} mixed-test precision, the deployed agent must run the detector inside the simulator loop.
+We therefore benchmarked the submission pipelines on \textbf{live} KAZ observations with \textbf{random archer actions} (no RL policy) using \texttt{python -m zombie\_detection.realtime.bench\_live\_env}.
+For each model, we timed $n=500$ calls to \texttt{pipeline.detect} (RGB frames only) and report mean and standard deviation in milliseconds; mixed-test precision is copied from Table~\ref{tab:bestmixed}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Live-environment detector latency vs.\ mixed-test precision ($n=500$ timed RGB frames; $\texttt{conf\_threshold}=0.35$, device auto).}
+  \label{tab:realtime_tradeoff}
+  \small
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    \textbf{Model} & \textbf{Mixed precision} & \textbf{Mean ms} & \textbf{Std ms} & \textbf{Notes} \\
+    \midrule
+    rt\_detr        & 0.9897 & 505.5148 & 117.6174 & highest precision, highest latency \\
+    yolov11n        & 0.9876 & 35.1068  & 9.4969   & strong precision, low latency \\
+    yolov8n         & 0.9813 & 32.2303  & 4.6079   & slightly faster, lower precision \\
+    resnet18\_head  & 0.9833 & 116.1268 & 10.7505  & mid latency, mid precision \\
+    heatmap\_cnn    & 0.9848 & 403.3244 & 24.6948  & high latency in our setup \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\noindent\textbf{Conclusion.}
+RT-DETR is marginally better on mixed-test precision, but its live inference latency is an order of magnitude higher than YOLOv11n in our deployment loop (Table~\ref{tab:realtime_tradeoff}).
+Given the real-time constraints of KAZ, we therefore \textbf{select YOLOv11n} as the submission model: it is nearly as accurate as RT-DETR while being dramatically faster.
+
+\section{Conclusions}
+\label{sec:conc}
+\begin{itemize}[noitemsep]
+  \item Under our protocol, \textbf{RT-DETR} and \textbf{YOLOv11n} achieve the highest \texttt{mixed} test precision (Table~\ref{tab:bestmixed}), aligning with the reported accuracy--speed profile of RT-DETR on COCO-like data~\citep{zhao2024rtdetr} and the continued evolution of the YOLO line~\citep{redmon2017yolo9000,ultralytics_yolo_docs} (see also the third-party YOLO11 survey~\citep{khanam2024yolo11}).
+  \item A live environment benchmark (Sec.~\ref{sec:realtime}) shows that \textbf{YOLOv11n} provides the best accuracy--latency trade-off for real-time deployment; despite slightly higher mixed precision, RT-DETR is too slow in our loop.
+  \item \textbf{Heatmap CNNs with manual features} reach strong mixed precision at the heatmap training resolution, supporting RQ3: engineered channels help under combined distortions.
+  \item \textbf{Faster R-CNN (torchvision), HOG+SVM, and template matching} score near zero under \texttt{mixed} in this campaign (Table~\ref{tab:bestmixed}); we treat them as negative controls or as requiring a different hyperparameter/label protocol, not as evidence that two-stage or classical methods are inherently unusable on KAZ~\citep{ren2015fasterrcnn,dalal2005hog}.
+  \item For \textbf{resource-constrained deployment}, heatmap+manual-feature models trade a small precision gap for predictable CNN cost; YOLO/RT-DETR remain preferable when Ultralytics training and weights are acceptable.
+\end{itemize}
+
+\section*{Reproducibility}
+\texttt{python zombie\_detection/reports/build\_report\_assets.py --results-root <output>} then \texttt{cd zombie\_detection/reports \&\& pdflatex experiment\_report.tex} (twice).
+
+\bibliographystyle{plainnat}
+\begin{thebibliography}{99}
+  \bibitem{mlproject2026}
+  KU Leuven.
+  \newblock ML project 2025--2026 assignment brief (Tasks~1--4).
+  \newblock \url{https://github.com/ML-KULeuven/ml-project-2025-2026}, 2026.
+
+  \bibitem{hendrycks2019benchmarking}
+  Hendrycks, D. and Dietterich, T.
+  \newblock Benchmarking neural network robustness to common corruptions and perturbations.
+  \newblock In \emph{International Conference on Learning Representations (ICLR)}, 2019.
+  \newblock arXiv:1903.12261.
+
+  \bibitem{terry2021pettingzoo}
+  Terry, J.~K., Black, B., Grammel, N., Jayakumar, M., Hari, A., Sullivan, R., Santos, L., Perez, R., Horsch, C., Dieffendahl, C., Williams, N.~L., Lokesh, Y., and Ravi, P.
+  \newblock PettingZoo: A standard API for multi-agent reinforcement learning.
+  \newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS) Datasets and Benchmarks Track}, 2021.
+  \newblock arXiv:2009.14471.
+
+  \bibitem{hernandez2019marl}
+  Hernandez-Leal, P., Kartal, B., and Taylor, M.~E.
+  \newblock A survey and critique of multiagent deep reinforcement learning.
+  \newblock \emph{Autonomous Agents and Multi-Agent Systems}, 33(6):750--797, 2019.
+
+  \bibitem{pettingzoo_kaz}
+  Farama Foundation.
+  \newblock \emph{Knights Archers Zombies --- PettingZoo documentation}.
+  \newblock \url{https://pettingzoo.farama.org/environments/butterfly/knights_archers_zombies/}, accessed 2026.
+
+  \bibitem{sb3_kaz_tutorial}
+  Farama Foundation.
+  \newblock \emph{SB3: PPO for Knights-Archers-Zombies} (PettingZoo tutorial).
+  \newblock \url{https://pettingzoo.farama.org/tutorials/sb3/kaz/}, accessed 2026.
+
+  \bibitem{liu2020deep}
+  Liu, L., Ouyang, W., Wang, X., Fieguth, P., Chen, J., Liu, X., and Pietik{\"a}inen, M.
+  \newblock Deep learning for generic object detection: A survey.
+  \newblock \emph{International Journal of Computer Vision}, 128(2):261--318, 2020.
+
+  \bibitem{lin2014coco}
+  Lin, T.-Y., Maire, M., Belongie, S., Hays, J., Perona, P., Ramanan, D., Doll{\'a}r, P., and Zitnick, C.~L.
+  \newblock Microsoft {COCO}: Common objects in context.
+  \newblock In \emph{European Conference on Computer Vision (ECCV)}, pages 740--755, 2014.
+
+  \bibitem{ren2015fasterrcnn}
+  Ren, S., He, K., Girshick, R., and Sun, J.
+  \newblock Faster {R-CNN}: Towards real-time object detection with region proposal networks.
+  \newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, volume~28, 2015.
+
+  \bibitem{zhao2024rtdetr}
+  Zhao, Y., Lv, W., Xu, S., Wei, J., Wang, G., Dang, Q., Liu, Y., and Chen, J.
+  \newblock DETRs beat YOLOs on real-time object detection.
+  \newblock In \emph{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, pages 16965--16974, 2024.
+
+  \bibitem{pan2010transfer}
+  Pan, S.~J. and Yang, Q.
+  \newblock A survey on transfer learning.
+  \newblock \emph{IEEE Transactions on Knowledge and Data Engineering}, 22(10):1345--1359, 2010.
+
+  \bibitem{yosinski2014transfer}
+  Yosinski, J., Clune, J., Bengio, Y., and Lipson, H.
+  \newblock How transferable are features in deep neural networks?
+  \newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, volume~27, 2014.
+
+  \bibitem{redmon2018yolov3}
+  Redmon, J. and Farhadi, A.
+  \newblock YOLOv3: An incremental improvement.
+  \newblock arXiv:1804.02767, 2018.
+
+  \bibitem{ultralytics_yolo_docs}
+  Ultralytics.
+  \newblock YOLO models and documentation.
+  \newblock \url{https://docs.ultralytics.com}, accessed 2026.
+
+  \bibitem{carion2020detr}
+  Carion, N., Massa, F., Synnaeve, G., Usunier, N., Kirillov, A., and Zagoruyko, S.
+  \newblock End-to-end object detection with transformers.
+  \newblock In \emph{European Conference on Computer Vision (ECCV)}, pages 213--229, 2020.
+
+  \bibitem{ojala2002lbp}
+  Ojala, T., Pietik{\"a}inen, M., and M{\"a}enp{\"a}{\"a}, T.
+  \newblock Multiresolution gray-scale and rotation invariant texture classification with local binary patterns.
+  \newblock \emph{IEEE Transactions on Pattern Analysis and Machine Intelligence}, 24(7):971--987, 2002.
+
+  \bibitem{shorten2019augmentation}
+  Shorten, C. and Khoshgoftaar, T.~M.
+  \newblock A survey on image data augmentation for deep learning.
+  \newblock \emph{Journal of Big Data}, 6(1):60, 2019.
+
+  \bibitem{everingham2010pascal}
+  Everingham, M., Van~Gool, L., Williams, C. K. I., Winn, J., and Zisserman, A.
+  \newblock The {PASCAL} visual object classes ({VOC}) challenge.
+  \newblock \emph{International Journal of Computer Vision}, 88(2):303--338, 2010.
+
+  \bibitem{ronneberger2015unet}
+  Ronneberger, O., Fischer, P., and Brox, T.
+  \newblock {U-Net}: Convolutional networks for biomedical image segmentation.
+  \newblock In \emph{International Conference on Medical Image Computing and Computer-Assisted Intervention (MICCAI)}, pages 234--241, 2015.
+
+  \bibitem{he2016resnet}
+  He, K., Zhang, X., Ren, S., and Sun, J.
+  \newblock Deep residual learning for image recognition.
+  \newblock In \emph{IEEE Conference on Computer Vision and Pattern Recognition (CVPR)}, pages 770--778, 2016.
+
+  \bibitem{lin2017focal}
+  Lin, T.-Y., Goyal, P., Girshick, R., He, K., and Doll{\'a}r, P.
+  \newblock Focal loss for dense object detection.
+  \newblock In \emph{IEEE International Conference on Computer Vision (ICCV)}, pages 2980--2988, 2017.
+
+  \bibitem{redmon2017yolo9000}
+  Redmon, J. and Farhadi, A.
+  \newblock YOLO9000: Better, faster, stronger.
+  \newblock In \emph{IEEE Conference on Computer Vision and Pattern Recognition (CVPR)}, pages 6517--6525, 2017.
+
+  \bibitem{khanam2024yolo11}
+  Khanam, R. and Hussain, M.
+  \newblock YOLOv11: An overview of the key architectural enhancements.
+  \newblock arXiv:2410.17725, 2024.
+
+  \bibitem{szeliski2010cv}
+  Szeliski, R.
+  \newblock \emph{Computer Vision: Algorithms and Applications}.
+  \newblock Springer, 2010.
+
+  \bibitem{dalal2005hog}
+  Dalal, N. and Triggs, B.
+  \newblock Histograms of oriented gradients for human detection.
+  \newblock In \emph{IEEE Computer Society Conference on Computer Vision and Pattern Recognition (CVPR)}, volume~1, pages 886--893, 2005.
+\end{thebibliography}
+
+\appendix
+\section{Additional figures}
+\label{app:figs}
+Learning curves (one panel per model category) and manual-feature ablation plots.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{summary_preproc_heatmap.png}
+  \caption{Maximum mixed precision by model and preprocessing (heatmap-resolution runs).}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{learn_heatmap_cnn.png}
+  \caption{Heatmap CNN: training/validation loss and validation precision.}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{learn_resnet18_head.png}
+  \caption{ResNet-18 heatmap head.}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{learn_resnet50_head.png}
+  \caption{ResNet-50 heatmap head.}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{learn_faster_rcnn.png}
+  \caption{Faster R-CNN training loop diagnostics.}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{learn_yolo.png}
+  \caption{Ultralytics YOLO training summary.}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{learn_rt_detr.png}
+  \caption{RT-DETR (Ultralytics) training summary.}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{learn_hog_svm.png}
+    \caption{HOG+SVM validation bar.}
+  \end{minipage}\hfill
+  \begin{minipage}{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{learn_template_match.png}
+    \caption{Template matching validation bar.}
+  \end{minipage}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{ablation_leave_one_out.png}
+  \caption{Leave-one-out manual-feature ablation.}
+  \label{fig:ablation_loo}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{ablation_single_feature.png}
+  \caption{Single-feature ablation.}
+  \label{fig:ablation_sf}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{ablation_loo_mean_by_feature.png}
+  \caption{Mean leave-one-out delta by feature.}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{ablation_sf_mean_precision.png}
+  \caption{Mean precision with exactly one manual feature.}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{ablation_delta_by_distortion_model.png}
+  \caption{Mean leave-one-out delta by distortion and backbone.}
+\end{figure}
+
+\end{document}
