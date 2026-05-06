@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # encoding: utf-8
-                      
-                 
+"""
+This file contains an example of training your agents using Ray RLLib.
+Notice that this code will not learn properlu, as no preprocessing of the data nor adaptation of the default PPO algorithm is done here.
 
+"""
 
 from pathlib import Path
 
@@ -60,29 +62,29 @@ def algo_config(id_env, policies, policies_to_train):
 
 def training(env, checkpoint_path, max_iterations = 500):
 
-                                                                     
-                                                                
+    # Translating the PettingZoo environment to an RLLib environment.
+    # Note: RLLib use a parallelized version of the environment.
     rllib_env = ParallelPettingZooEnv(pettingzoo.utils.conversions.aec_to_parallel(env))
     id_env = "knights_archers_zombies_v10"
     register_env(id_env, lambda config: rllib_env)
 
-               
+    # Fix seeds
     np.random.seed(42)
     torch.manual_seed(42)
 
-                                                    
+    # Define the configuration for the PPO algorithm
     policies = [x for x in env.agents]
     policies_to_train = policies
     config = algo_config(id_env, policies, policies_to_train)
 
-                     
+    # Train the model
     algo = config.build()
     for i in range(max_iterations):
         result = algo.train()
         result.pop("config")
         if "env_runners" in result and "agent_episode_returns_mean" in result["env_runners"]:
             print(i, result["env_runners"]["agent_episode_returns_mean"])
-            if result["env_runners"]["agent_episode_returns_mean"]["archer_0"] > 5:                                  
+            if result["env_runners"]["agent_episode_returns_mean"]["archer_0"] > 5: # Or any early stopping criterion
                 break
         if i % 5 == 0:
             save_result = algo.save(checkpoint_path)
@@ -97,10 +99,10 @@ def training(env, checkpoint_path, max_iterations = 500):
 if __name__ == "__main__":
 
 
-                                                    
+    # Create the PettingZoo environment for training
     env = create_environment()
     env = CustomWrapper(env)
 
-                              
+    # Running training routine
     checkpoint_path = str(Path("results").resolve())
     training(env, checkpoint_path, max_iterations = 100)

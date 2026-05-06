@@ -1,4 +1,9 @@
+"""Pretrained ResNet backbone with a heatmap detection head.
 
+Uses a ResNet encoder (ImageNet-pretrained, optionally frozen) followed
+by upsampling layers that produce a single-channel heatmap, reusing
+the same peak-to-box post-processing as heatmap_cnn.
+"""
 
 import torch
 import torch.nn as nn
@@ -7,7 +12,7 @@ import torchvision.models as models
 
 
 class ResNetDetector(nn.Module):
-    
+    """ResNet backbone + lightweight decoder for heatmap regression."""
 
     def __init__(
         self,
@@ -33,7 +38,7 @@ class ResNetDetector(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
 
-                                                        
+        # If input has != 3 channels, replace first conv
         if in_channels != 3:
             base.conv1 = nn.Conv2d(
                 in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
@@ -71,6 +76,6 @@ class ResNetDetector(nn.Module):
         input_h, input_w = x.shape[2], x.shape[3]
         features = self.encoder(x)
         heatmap = self.decoder(features)
-                                          
+        # Resize to exact input dimensions
         heatmap = F.interpolate(heatmap, size=(input_h, input_w), mode="bilinear", align_corners=False)
         return torch.sigmoid(heatmap)

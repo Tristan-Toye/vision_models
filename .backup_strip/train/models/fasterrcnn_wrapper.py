@@ -1,4 +1,8 @@
+"""Faster R-CNN wrapper using torchvision's pretrained model.
 
+Fine-tunes a Faster R-CNN with ResNet-50 FPN backbone on the zombie
+detection dataset. Supports freezing the backbone for transfer learning.
+"""
 
 import numpy as np
 import torch
@@ -9,7 +13,7 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
 
 def _set_backbone_input_channels(model: nn.Module, in_channels: int, pretrained: bool) -> None:
-    
+    """Replace ResNet-FPN backbone conv1 when input channel count != 3."""
     if in_channels == 3:
         return
     old = model.backbone.body.conv1
@@ -36,7 +40,7 @@ def _set_backbone_input_channels(model: nn.Module, in_channels: int, pretrained:
 
 
 def _align_rcnn_transform_norm(model: nn.Module, in_channels: int) -> None:
-    
+    """Extend Faster R-CNN ImageNet mean/std lists when backbone takes != 3 channels."""
     t = model.transform
     n = len(t.image_mean)
     if in_channels <= n:
@@ -49,7 +53,7 @@ def _align_rcnn_transform_norm(model: nn.Module, in_channels: int) -> None:
 
 
 class FasterRCNNDetector(torch.nn.Module):
-    
+    """Faster R-CNN fine-tuned for zombie detection (2 classes: bg + zombie)."""
 
     def __init__(
         self,
@@ -83,7 +87,10 @@ class FasterRCNNDetector(torch.nn.Module):
         conf: float = 0.5,
         device: str = "cpu",
     ) -> np.ndarray:
-        
+        """Run inference on a single image (H, W, C) uint8 with C == model input channels.
+
+        Returns (N, 4) array of [x, y, w, h] in pixel coords.
+        """
         self.eval()
         img_tensor = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
         img_tensor = img_tensor.to(device)

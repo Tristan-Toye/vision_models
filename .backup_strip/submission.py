@@ -1,4 +1,9 @@
+"""Submission file for Task 3 (multi agent KAZ).
 
+Runtime is fixed to a single model for deployment simplicity:
+**YOLOv11n** (Ultralytics) with weights shipped in-repo under
+``zombie_detection/realtime/runtime_models/yolov11n/``.
+"""
 from __future__ import annotations
 
 import sys
@@ -16,7 +21,7 @@ if PACKAGE_DIR not in sys.path:
 
 
 class CustomWrapper(BaseWrapper):
-    
+    """Pass-through wrapper (observations stay default RGB HWC unless you change this)."""
 
     def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
         return self.env.observation_space(agent)
@@ -26,7 +31,7 @@ class CustomWrapper(BaseWrapper):
 
 
 class CustomPredictFunction(Callable):
-    
+    """Placeholder for RL agent (not implemented in CV-only mode)."""
 
     def __init__(self, env: gymnasium.Env):
         pass
@@ -36,7 +41,11 @@ class CustomPredictFunction(Callable):
 
 
 class CustomZombieDetectorFunction(Callable):
-    
+    """Detect zombies using the fixed runtime pipeline (YOLOv11n).
+
+    Returns ``(N, 4)`` float32 ``[x, y, width, height]`` in screen pixels, sorted
+    by confidence (evaluation contract).
+    """
 
     def __init__(self, env: gymnasium.Env):
         from zombie_detection.yolov11n import YOLOv11nPipeline
@@ -45,7 +54,7 @@ class CustomZombieDetectorFunction(Callable):
         self._pipeline = YOLOv11nPipeline(device="auto", conf_threshold=0.35)
 
     def __call__(self, observation, *args, **kwargs):
-        
+        """Return ``(N,4)`` float32 ``[x,y,w,h]``; empty array if no detections."""
         if observation is None:
             return np.zeros((0, 4), dtype=np.float32)
 

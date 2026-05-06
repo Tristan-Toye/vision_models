@@ -1,4 +1,12 @@
+"""Experiment pipeline: train and evaluate all model configurations.
 
+Iterates over the experiment matrix defined in config.yaml, trains each
+model variant, evaluates on the test set per distortion level, and
+produces comparison tables and charts.
+
+Usage:
+    python -m train.evaluate_models [--config zombie_detection/config.yaml]
+"""
 
 import argparse
 import json
@@ -28,14 +36,14 @@ from train.preprocessing import build_preprocessing_pipeline
 from train.dataset import ZombieDetectionDataset
 
 
-                                                                      
+# ───────── Which (model, loss, pretrained) combos are valid ─────────
 
-                                                           
+# Loss functions only apply to heatmap-based PyTorch models
 LOSS_APPLICABLE = {
     "heatmap_cnn": ["mse", "focal", "bce", "smooth_l1"],
     "resnet18_head": ["mse", "focal", "bce", "smooth_l1"],
     "resnet50_head": ["mse", "focal", "bce", "smooth_l1"],
-    "faster_rcnn": ["default"],                              
+    "faster_rcnn": ["default"],  # uses its own built-in loss
     "yolov8n": ["default"],
     "yolov11n": ["default"],
     "rt_detr": ["default"],
@@ -63,14 +71,14 @@ MANUAL_FEATURES_APPLICABLE = {
 
 
 def _resize_label(resize_val) -> str:
-    
+    """Human-readable label for a resize setting."""
     if resize_val is None:
         return "native"
     return f"{resize_val[0]}x{resize_val[1]}"
 
 
 def generate_experiment_configs(cfg: dict) -> list[dict]:
-    
+    """Generate all valid experiment configurations."""
     experiments = []
     exp_cfg = cfg["experiments"]
 
@@ -82,17 +90,17 @@ def generate_experiment_configs(cfg: dict) -> list[dict]:
         pretrained_modes = PRETRAINED_APPLICABLE.get(model_name, ["scratch"])
         preproc_variants = exp_cfg.get("preprocessing_variants", ["rgb"])
 
-                                                       
+        # Self-training models handle resize internally
         if model_name in SELF_TRAINING_MODELS:
             preproc_variants = ["rgb"]
-            model_resize_variants = [None]                                       
+            model_resize_variants = [None]  # YOLO/DETR handle their own resizing
         else:
             model_resize_variants = resize_variants
 
         applicable_losses = [l for l in losses if l in exp_cfg.get("loss_functions", ["mse"]) or l == "default"]
         applicable_pretrained = [p for p in pretrained_modes if p in exp_cfg.get("pretrained_modes", ["finetune"])]
         if not applicable_pretrained:
-                                                                                                   
+            # No config-listed mode is valid for this model — fall back to its first supported mode
             applicable_pretrained = [pretrained_modes[0]]
 
         model_mf_options = MANUAL_FEATURES_APPLICABLE.get(model_name, [False])
@@ -129,7 +137,11 @@ def evaluate_on_test(
     resize: "list[int] | None" = None,
     manual_features: bool = False,
 ) -> dict:
-    
+    """Evaluate both best and last checkpoints on the test set.
+
+    Returns a dict with 'best' and 'last' keys, each containing
+    per-distortion-group precision results.
+    """
     results = {}
     for ckpt_tag in ("best", "last"):
         ckpt_results = _evaluate_checkpoint(
@@ -153,7 +165,7 @@ def _evaluate_checkpoint(
     manual_features: bool = False,
     manual_features_mask: list[bool] | None = None,
 ) -> dict:
-    
+    """Evaluate a single checkpoint on the test set, grouped by distortion level."""
     ds_cfg = cfg["dataset"]
     data_dir = PROJECT_ROOT / ds_cfg["base_dir"] / ds_cfg["name"]
     test_dir = data_dir / "test"
@@ -163,7 +175,7 @@ def _evaluate_checkpoint(
 
     ckpt_path = checkpoint_dir / checkpoint_name
     if not ckpt_path.exists():
-                                               
+        # YOLO/DETR may store weights elsewhere
         alt_paths = list(checkpoint_dir.glob("*/weights/best.pt"))
         if checkpoint_name == "best_model.pt" and alt_paths:
             ckpt_path = alt_paths[0]
@@ -174,7 +186,7 @@ def _evaluate_checkpoint(
             else:
                 return {"error": f"{checkpoint_name} not found"}
 
-                                                                          
+    # Pre-scan test files once (avoid 5x full scans for distortion groups)
     obs_files_all = sorted(test_dir.glob("*_obs.npy"))
     parsed = []
     for obs_path in obs_files_all:
@@ -191,7 +203,7 @@ def _evaluate_checkpoint(
             continue
         parsed.append((file_level, obs_path, box_path))
 
-                                                               
+    # For Ultralytics models, load detector once per checkpoint
     detector = None
     if model_name in SELF_TRAINING_MODELS:
         detector = get_model(model_name, checkpoint=str(ckpt_path))
@@ -214,7 +226,7 @@ def _evaluate_checkpoint(
             gt_boxes = np.load(str(box_path))
 
             if model_name in SELF_TRAINING_MODELS:
-                                                                                                 
+                # Reuse loaded model. Only Ultralytics models accept predict kwargs like max_det.
                 if model_name in {"yolov8n", "yolov11n", "rt_detr"}:
                     pred_boxes = detector.predict(image, max_det=100)
                 else:
@@ -317,7 +329,11 @@ def _predict_fasterrcnn(
 
 
 def create_comparison_table(all_results: list[dict]) -> pd.DataFrame:
-    
+    """Create a comparison DataFrame from experiment results.
+
+    Test results now have a 'best' and 'last' sub-key.  We produce columns
+    like  precision_best_mixed, precision_last_mixed, etc.
+    """
     rows = []
     for r in all_results:
         row = {
@@ -332,7 +348,7 @@ def create_comparison_table(all_results: list[dict]) -> pd.DataFrame:
         }
         test_results = r.get("test_results", {})
 
-                                                                   
+        # New format: test_results = {"best": {...}, "last": {...}}
         if "best" in test_results or "last" in test_results:
             for ckpt_tag in ("best", "last"):
                 ckpt_data = test_results.get(ckpt_tag, {})
@@ -340,7 +356,7 @@ def create_comparison_table(all_results: list[dict]) -> pd.DataFrame:
                     if isinstance(group_data, dict):
                         row[f"precision_{ckpt_tag}_{group_name}"] = group_data.get("avg_precision", 0)
         else:
-                                                                
+            # Backwards compat with old single-checkpoint format
             for group_name, group_data in test_results.items():
                 if isinstance(group_data, dict):
                     row[f"precision_best_{group_name}"] = group_data.get("avg_precision", 0)
@@ -351,12 +367,12 @@ def create_comparison_table(all_results: list[dict]) -> pd.DataFrame:
 
 
 def plot_comparison(df: pd.DataFrame, output_dir: Path):
-    
+    """Generate comparison bar charts (using best-checkpoint columns)."""
     best_cols = [c for c in df.columns if c.startswith("precision_best_")]
     if not best_cols:
         return
 
-                                                                          
+    # ── Chart 1: all experiments, best checkpoint, by distortion group ──
     fig, ax = plt.subplots(figsize=(16, 8))
 
     x = np.arange(len(df))
@@ -378,7 +394,7 @@ def plot_comparison(df: pd.DataFrame, output_dir: Path):
     fig.savefig(str(output_dir / "model_comparison.png"), dpi=150)
     plt.close(fig)
 
-                                                       
+    # ── Chart 2: best result per model architecture ──
     fig2, ax2 = plt.subplots(figsize=(12, 6))
 
     mixed_col = "precision_best_mixed"
@@ -393,7 +409,7 @@ def plot_comparison(df: pd.DataFrame, output_dir: Path):
 
     plt.close(fig2)
 
-                                                       
+    # ── Chart 3: best vs last checkpoint comparison ──
     last_mixed = "precision_last_mixed"
     if mixed_col in df.columns and last_mixed in df.columns:
         fig3, ax3 = plt.subplots(figsize=(14, 6))
@@ -412,13 +428,13 @@ def plot_comparison(df: pd.DataFrame, output_dir: Path):
         fig3.savefig(str(output_dir / "best_vs_last_checkpoint.png"), dpi=150)
         plt.close(fig3)
 
-                                           
+    # ── Chart 4: manual features impact ──
     if "manual_features" in df.columns and mixed_col in df.columns:
         _plot_manual_features_impact(df, output_dir)
 
 
 def _plot_manual_features_impact(df: pd.DataFrame, output_dir: Path):
-    
+    """Compare precision with vs without manual features for applicable models."""
     mf_df = df[df["manual_features"].isin([True, False])].copy()
     if mf_df.empty:
         return
@@ -458,7 +474,7 @@ def _plot_manual_features_impact(df: pd.DataFrame, output_dir: Path):
         ax.bar(x + offset_nomf, merged[col_nomf].values, width,
                label=f"{group} -mf", alpha=0.5)
 
-                                                                                            
+    # loss/pretrained/preprocessing are part of the merge keys, so they do NOT get suffixes.
     labels = merged.apply(
         lambda r: f"{r['model']}\n{r['loss']}/{r['pretrained']}/{r['preprocessing']}",
         axis=1,
@@ -475,7 +491,7 @@ def _plot_manual_features_impact(df: pd.DataFrame, output_dir: Path):
 
 
 def _experiment_result_json_valid(exp_output: Path) -> bool:
-    
+    """True if experiment_result.json exists, is non-empty, and parses as JSON."""
     path = exp_output / "experiment_result.json"
     if not path.exists() or path.stat().st_size == 0:
         return False
@@ -488,29 +504,29 @@ def _experiment_result_json_valid(exp_output: Path) -> bool:
 
 
 def _experiment_has_checkpoint(exp_output: Path) -> bool:
-    
+    """True if any model checkpoint artifact exists for this experiment."""
     return (
         (exp_output / "best_model.pt").exists()
         or (exp_output / "last_model.pt").exists()
         or (exp_output / "hog_svm.joblib").exists()
-        or any(exp_output.glob("*/weights/best.pt"))             
+        or any(exp_output.glob("*/weights/best.pt"))  # YOLO/DETR
         or any(exp_output.glob("*/weights/last.pt"))
     )
 
 
 def _experiment_already_done(exp_output: Path) -> bool:
-    
+    """Check whether an experiment has already been trained and evaluated."""
     return _experiment_has_checkpoint(exp_output) and _experiment_result_json_valid(exp_output)
 
 
 def _load_previous_result(exp_output: Path) -> dict:
-    
+    """Load the cached result for an already-completed experiment."""
     with open(exp_output / "experiment_result.json", "r") as f:
         return json.load(f)
 
 
 def _check_split_exists(cfg: dict, split: str) -> bool:
-    
+    """Return True if a specific split directory exists and contains obs files."""
     ds_cfg = cfg["dataset"]
     split_dir = PROJECT_ROOT / ds_cfg["base_dir"] / ds_cfg["name"] / split
     return split_dir.exists() and bool(list(split_dir.glob("*_obs.npy")))
@@ -521,7 +537,7 @@ def _check_dataset_exists(cfg: dict) -> bool:
 
 
 def _setup_error_log(output_dir: Path) -> logging.Logger:
-    
+    """Create a file logger for experiment errors."""
     log_path = output_dir / "error_log.txt"
     logger = logging.getLogger("experiment_errors")
     logger.setLevel(logging.ERROR)
@@ -533,7 +549,7 @@ def _setup_error_log(output_dir: Path) -> logging.Logger:
 
 
 def _fmt_duration(seconds: float) -> str:
-    
+    """Human-readable duration."""
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
     if h:
@@ -563,7 +579,7 @@ def main():
 
     error_logger = _setup_error_log(output_dir)
 
-                         
+    # ── Dataset check ──
     if not _check_dataset_exists(cfg):
         if args.generate_dataset:
             print("Dataset not found. Generating...")
@@ -602,7 +618,7 @@ def main():
         exp_output = output_dir / exp["id"]
         exp_output.mkdir(parents=True, exist_ok=True)
 
-                                               
+        # Skip if already trained and evaluated
         if not args.force_retrain and _experiment_already_done(exp_output):
             exp_bar.write(f"  SKIP  {exp['id']}  (cached)")
             result = _load_previous_result(exp_output)
@@ -610,7 +626,7 @@ def main():
             skipped += 1
             continue
 
-                                                                                
+        # If a checkpoint exists but results are missing/invalid, run TEST only.
         if (
             not args.force_retrain
             and _experiment_has_checkpoint(exp_output)
@@ -674,7 +690,7 @@ def main():
         exp_failed = False
         start = time.time()
 
-                        
+        # ── Training ──
         try:
             train_results = train_model(
                 model_name=exp["model"],
@@ -697,7 +713,7 @@ def main():
 
         train_time = time.time() - start
 
-                               
+        # ── Test evaluation ──
         test_results = {}
         if not exp_failed:
             try:
@@ -728,7 +744,7 @@ def main():
         }
         all_results.append(result)
 
-                                                      
+        # Save per-experiment result for skip-on-rerun
         if not exp_failed:
             with open(exp_output / "experiment_result.json", "w") as f:
                 json.dump(result, f, indent=2, default=str)
@@ -737,13 +753,13 @@ def main():
         else:
             failed_experiments.append(exp["id"])
 
-                                         
+        # Save incremental global results
         with open(output_dir / "experiments_results.json", "w") as f:
             json.dump(all_results, f, indent=2, default=str)
 
         exp_bar.set_postfix(ok=succeeded, fail=len(failed_experiments), skip=skipped)
 
-                         
+    # ── Final summary ──
     pipeline_time = time.time() - pipeline_start
     ran = total - skipped
     n_failed = len(failed_experiments)
@@ -774,7 +790,7 @@ def main():
 
     print(f"{'='*70}")
 
-                                                      
+    # Print top 5 by mixed precision (best checkpoint)
     best_mixed = "precision_best_mixed"
     last_mixed = "precision_last_mixed"
     if best_mixed in df.columns and not df[best_mixed].isna().all():
@@ -786,7 +802,7 @@ def main():
         print(top5.to_string(index=False))
         print()
 
-                                                           
+    # ── Feature ablation on manual-features experiments ──
     mf_results = [r for r in all_results
                   if r.get("manual_features") and r.get("status") == "success"]
     if mf_results:
@@ -796,7 +812,7 @@ def main():
         run_feature_ablation(mf_results, cfg, output_dir)
 
 
-                                                                    
+# ──────────────────────── Feature Ablation ────────────────────────
 
 
 def run_feature_ablation(
@@ -804,7 +820,11 @@ def run_feature_ablation(
     cfg: dict,
     output_dir: Path,
 ):
-    
+    """Run leave-one-out and single-feature ablation on trained manual-features models.
+
+    For each experiment, loads the best checkpoint and evaluates 8 times
+    with different channel masks on the test set.
+    """
     from train.preprocessing import MANUAL_FEATURE_NAMES, NUM_MANUAL_FEATURES
 
     all_rows = []
@@ -818,7 +838,7 @@ def run_feature_ablation(
 
         baseline_results = exp.get("test_results", {}).get("best", {})
 
-                                                   
+        # Leave-one-out: drop one feature at a time
         for fi, fname in enumerate(MANUAL_FEATURE_NAMES):
             mask = [True] * NUM_MANUAL_FEATURES
             mask[fi] = False
@@ -845,7 +865,7 @@ def run_feature_ablation(
                     "precision_delta": ablation_prec - baseline_prec,
                 })
 
-                                                         
+        # Single-feature: keep only one feature at a time
         for fi, fname in enumerate(MANUAL_FEATURE_NAMES):
             mask = [False] * NUM_MANUAL_FEATURES
             mask[fi] = True
@@ -888,8 +908,8 @@ def run_feature_ablation(
 
 
 def _plot_ablation(abl_df: pd.DataFrame, output_dir: Path):
-    
-                               
+    """Generate ablation bar charts."""
+    # ── Leave-one-out chart ──
     loo = abl_df[abl_df["ablation_type"] == "leave_one_out"].copy()
     if not loo.empty:
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -908,7 +928,7 @@ def _plot_ablation(abl_df: pd.DataFrame, output_dir: Path):
         fig.savefig(str(output_dir / "ablation_leave_one_out.png"), dpi=150)
         plt.close(fig)
 
-                                
+    # ── Single-feature chart ──
     sf = abl_df[abl_df["ablation_type"] == "single_feature"].copy()
     if not sf.empty:
         fig, ax = plt.subplots(figsize=(12, 6))

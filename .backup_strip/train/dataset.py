@@ -1,4 +1,10 @@
+"""PyTorch Dataset for zombie detection.
 
+Supports multiple target formats for different model families:
+- 'bbox': list of dicts with 'boxes' and 'labels' tensors (for RCNN/DETR)
+- 'heatmap': 2D Gaussian heatmap at zombie centers (for heatmap CNN / ResNet head)
+- 'yolo': normalized [cx, cy, w, h] per box (for YOLO export, not used at runtime)
+"""
 
 from pathlib import Path
 from typing import Optional, Callable, Literal
@@ -12,7 +18,7 @@ TargetMode = Literal["bbox", "heatmap", "yolo"]
 
 
 class ZombieDetectionDataset(Dataset):
-    
+    """Load *_obs.npy / *_zombies.npy pairs from a split directory."""
 
     def __init__(
         self,
@@ -46,8 +52,8 @@ class ZombieDetectionDataset(Dataset):
 
     def __getitem__(self, idx):
         obs_path, box_path = self.samples[idx]
-        image = np.load(str(obs_path))                            
-        boxes = np.load(str(box_path))                                          
+        image = np.load(str(obs_path))           # (H, W, 3) uint8
+        boxes = np.load(str(box_path))            # (N, 4) float32  [x, y, w, h]
 
         if self.transform is not None:
             image, boxes = self.transform(image, boxes)
@@ -66,7 +72,7 @@ class ZombieDetectionDataset(Dataset):
         return img_tensor, target
 
     def _make_bbox_target(self, boxes: np.ndarray, img_hw: tuple) -> dict:
-        
+        """Return dict with 'boxes' as [x1,y1,x2,y2] and 'labels'."""
         if len(boxes) == 0:
             return {
                 "boxes": torch.zeros((0, 4), dtype=torch.float32),
@@ -88,7 +94,7 @@ class ZombieDetectionDataset(Dataset):
         }
 
     def _make_heatmap_target(self, boxes: np.ndarray, img_hw: tuple) -> torch.Tensor:
-        
+        """Gaussian heatmap at zombie centers."""
         hm_h, hm_w = self.heatmap_size
         heatmap = np.zeros((1, hm_h, hm_w), dtype=np.float32)
 
@@ -110,12 +116,12 @@ class ZombieDetectionDataset(Dataset):
         return torch.from_numpy(heatmap)
 
     def _make_yolo_target(self, boxes: np.ndarray, img_hw: tuple) -> torch.Tensor:
-        
+        """Normalized [class, cx, cy, w, h] for YOLO format."""
         if len(boxes) == 0:
             return torch.zeros((0, 5), dtype=torch.float32)
 
         yolo = np.zeros((len(boxes), 5), dtype=np.float32)
-        yolo[:, 0] = 0                    
+        yolo[:, 0] = 0  # class 0 = zombie
         yolo[:, 1] = (boxes[:, 0] + boxes[:, 2] / 2.0) / self.screen_w
         yolo[:, 2] = (boxes[:, 1] + boxes[:, 3] / 2.0) / self.screen_h
         yolo[:, 3] = boxes[:, 2] / self.screen_w
@@ -125,14 +131,14 @@ class ZombieDetectionDataset(Dataset):
 
 
 def bbox_collate_fn(batch):
-    
+    """Collate for variable-length bbox targets."""
     images = torch.stack([item[0] for item in batch])
     targets = [item[1] for item in batch]
     return images, targets
 
 
 def heatmap_collate_fn(batch):
-    
+    """Standard collate for heatmap targets."""
     images = torch.stack([item[0] for item in batch])
     targets = torch.stack([item[1] for item in batch])
     return images, targets

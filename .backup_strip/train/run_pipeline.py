@@ -1,4 +1,13 @@
+"""One-command pipeline: dataset generation + training + evaluation.
 
+Generates the dataset (if not already present), then runs every experiment
+in the config matrix, skipping any model that has already been trained.
+
+Usage:
+    python -m train.run_pipeline
+    python -m train.run_pipeline --models yolov8n heatmap_cnn
+    python -m train.run_pipeline --force-retrain
+"""
 
 import argparse
 import sys
@@ -38,7 +47,7 @@ def main():
 
     cfg = load_config(args.config)
 
-                           
+    # ── Step 1: Dataset ──
     if not args.skip_dataset:
         from train.evaluate_models import _check_dataset_exists
 
@@ -71,12 +80,12 @@ def main():
                 )
             print("\nDataset generation complete!\n")
 
-                               
+    # ── Step 2: Experiments ──
     print("=" * 60)
     print("STEP 2: Running experiments (train + evaluate)")
     print("=" * 60)
 
-                                                                    
+    # Re-use evaluate_models.main logic but with already-parsed args
     eval_argv = ["--config", args.config, "--output-dir", args.output_dir, "--generate-dataset"]
     if args.models:
         eval_argv += ["--models"] + args.models

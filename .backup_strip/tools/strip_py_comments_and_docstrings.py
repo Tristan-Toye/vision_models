@@ -1,6 +1,21 @@
 #!/usr/bin/env python3
-                      
+"""
+Strip Python `# ...` comments AND docstrings (triple-quoted blocks that are used
+as module/class/function docstrings or standalone string statements).
 
+This is intentionally destructive. It keeps:
+  - shebang line (#!...) if present
+  - encoding cookie (PEP 263) in first/second line if present
+  - normal string literals used in assignments/expressions
+
+It removes:
+  - all COMMENT tokens
+  - docstrings in modules, classes, and functions (AST docstrings)
+  - standalone string statements (often used as multi-line comments)
+
+Usage (from repo root):
+  python tools/strip_py_comments_and_docstrings.py --root . --backup-dir .backup_strip
+"""
 
 from __future__ import annotations
 
@@ -28,7 +43,7 @@ class Span:
 
 
 def _read_text(path: Path) -> str:
-                                 
+    # Preserve original newlines.
     return path.read_text(encoding="utf-8", errors="surrogateescape")
 
 
@@ -45,7 +60,9 @@ def _is_encoding_cookie(line: str) -> bool:
 
 
 def _docstring_spans(src: str) -> list[Span]:
-    
+    """
+    Compute spans of docstrings and standalone string statements to delete.
+    """
     try:
         tree = ast.parse(src)
     except SyntaxError:
@@ -54,13 +71,13 @@ def _docstring_spans(src: str) -> list[Span]:
     spans: list[Span] = []
 
     def add_docstring_span(node: ast.AST) -> None:
-                                                                  
+        # Only remove if the first statement is a constant string.
         body = getattr(node, "body", None)
         if not body:
             return
         first = body[0]
         if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
-                                                                                      
+            # Python 3.8+ has end_lineno / end_col_offset for constants in most cases.
             if getattr(first, "lineno", None) is None or getattr(first, "end_lineno", None) is None:
                 return
             spans.append(
@@ -72,12 +89,12 @@ def _docstring_spans(src: str) -> list[Span]:
                 )
             )
 
-    add_docstring_span(tree)                    
+    add_docstring_span(tree)  # module docstring
     for n in ast.walk(tree):
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             add_docstring_span(n)
 
-                                                                                           
+    # Also remove any standalone string statements anywhere (often used as block comments).
     for n in ast.walk(tree):
         if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str):
             if getattr(n, "lineno", None) is None or getattr(n, "end_lineno", None) is None:
@@ -91,7 +108,7 @@ def _docstring_spans(src: str) -> list[Span]:
                 )
             )
 
-                                                     
+    # Deduplicate (same span may be collected twice).
     uniq: dict[tuple[int, int, int, int], Span] = {}
     for s in spans:
         uniq[(s.start_line, s.start_col, s.end_line, s.end_col)] = s
@@ -101,13 +118,15 @@ def _docstring_spans(src: str) -> list[Span]:
 
 
 def _strip_comments_tokens(src: str) -> str:
-    
+    """
+    Remove COMMENT tokens with tokenize, keeping spacing/newlines intact.
+    """
     out_tokens: list[tokenize.TokenInfo] = []
     sio = StringIO(src)
     try:
         tokens = list(tokenize.generate_tokens(sio.readline))
     except tokenize.TokenError:
-                                             
+        # Fallback: crude line-based removal.
         return "\n".join([ln.split("#", 1)[0].rstrip() for ln in src.splitlines()]) + ("\n" if src.endswith("\n") else "")
 
     for t in tokens:
@@ -118,17 +137,19 @@ def _strip_comments_tokens(src: str) -> str:
 
 
 def _apply_spans_delete(src: str, spans: list[Span]) -> str:
-    
+    """
+    Delete given spans from source text.
+    """
     if not spans:
         return src
 
     lines = src.splitlines(keepends=True)
 
     def idx(line_no: int, col: int) -> int:
-                             
+        # line_no is 1-based.
         return sum(len(lines[i]) for i in range(0, line_no - 1)) + col
 
-                                                  
+    # Work on absolute indices in the full string.
     deletes: list[tuple[int, int]] = []
     for s in spans:
         start = idx(s.start_line, s.start_col)
@@ -136,7 +157,7 @@ def _apply_spans_delete(src: str, spans: list[Span]) -> str:
         if end > start:
             deletes.append((start, end))
 
-                                
+    # Merge overlapping deletes.
     deletes.sort()
     merged: list[tuple[int, int]] = []
     for a, b in deletes:
@@ -158,7 +179,7 @@ def strip_file(path: Path) -> bool:
     src = _read_text(path)
     original = src
 
-                                                                                             
+    # Preserve shebang + encoding cookie if they exist; we’ll re-inject them after stripping.
     lines = src.splitlines(keepends=True)
     prefix: list[str] = []
     consumed = 0
@@ -172,19 +193,19 @@ def strip_file(path: Path) -> bool:
 
     body = "".join(lines[consumed:])
 
-                                                                                                        
-                                                               
+    # Remove docstrings / standalone string statements first (AST spans are against body’s line numbers,
+    # so parse the whole file and then delete on the full src).
     spans = _docstring_spans(src)
     src2 = _apply_spans_delete(src, spans)
 
-                                  
+    # Now remove `# ...` comments.
     src3 = _strip_comments_tokens(src2)
 
-                                                                                           
-                                               
+    # Re-ensure prefix (shebang/encoding) still present; if stripping removed them, re-add.
+    # We only do this if the original had them.
     if prefix:
         new_lines = src3.splitlines(keepends=True)
-                                                                                               
+        # Remove any existing shebang/encoding lines from the new content to avoid duplication.
         while new_lines and (_is_shebang(new_lines[0]) or _is_encoding_cookie(new_lines[0])):
             new_lines.pop(0)
         src3 = "".join(prefix) + "".join(new_lines)
@@ -223,7 +244,7 @@ def main() -> None:
 
         if args.dry_run:
             before = _read_text(p)
-                                            
+            # compute change without writing
             spans = _docstring_spans(before)
             after = _strip_comments_tokens(_apply_spans_delete(before, spans))
             if after != before:

@@ -1,4 +1,9 @@
+"""Encoder-decoder CNN that outputs a zombie center heatmap.
 
+The heatmap is a single-channel image where each zombie's center
+produces a Gaussian peak. At inference, peaks are extracted and
+converted to fixed-size bounding boxes.
+"""
 
 import numpy as np
 import torch
@@ -12,7 +17,14 @@ def _peak_local_max_torch(
     min_distance: int,
     threshold_abs: float,
 ) -> np.ndarray:
-    
+    """Return (N,2) int coords (row, col) of local maxima.
+
+    This is a small replacement for `skimage.feature.peak_local_max` using only
+    PyTorch. It performs max-pooling based local-max detection, applies an
+    absolute threshold, excludes a border of `min_distance`, and then applies a
+    greedy non-maximum suppression so returned peaks are at least `min_distance`
+    apart (Chebyshev distance), similar to skimage defaults.
+    """
     if heatmap.ndim != 2:
         raise ValueError(f"Expected 2D heatmap, got shape {heatmap.shape}")
     if min_distance < 0:
@@ -22,26 +34,26 @@ def _peak_local_max_torch(
     if hm.numel() == 0:
         return np.zeros((0, 2), dtype=np.int64)
 
-                                           
+    # Local-max via (2d+1)x(2d+1) max pool.
     d = int(min_distance)
     k = 2 * d + 1
-    hm4 = hm[None, None, :, :]             
+    hm4 = hm[None, None, :, :]  # (1,1,H,W)
     pooled = F.max_pool2d(hm4, kernel_size=k, stride=1, padding=d)
     is_peak = (hm4 == pooled) & (hm4 >= float(threshold_abs))
 
-                                                                                  
-                                 
+    # Match skimage default exclude_border=True (effectively excludes a `d` border
+    # when min_distance is used).
     if d > 0:
         is_peak[:, :, :d, :] = False
         is_peak[:, :, -d:, :] = False
         is_peak[:, :, :, :d] = False
         is_peak[:, :, :, -d:] = False
 
-    coords = torch.nonzero(is_peak[0, 0], as_tuple=False)               
+    coords = torch.nonzero(is_peak[0, 0], as_tuple=False)  # (M,2) [r,c]
     if coords.numel() == 0:
         return np.zeros((0, 2), dtype=np.int64)
 
-                                                                  
+    # Greedy NMS to ensure spacing. Sort by confidence descending.
     scores = hm[coords[:, 0], coords[:, 1]]
     order = torch.argsort(scores, descending=True)
     coords = coords[order]
@@ -51,8 +63,8 @@ def _peak_local_max_torch(
         if not keep:
             keep.append(rc)
             continue
-        kept = torch.stack(keep, dim=0)         
-                                                                      
+        kept = torch.stack(keep, dim=0)  # (K,2)
+        # Chebyshev distance (max(|dr|,|dc|)) like a square footprint.
         dist = torch.max(torch.abs(kept - rc), dim=1).values
         if torch.all(dist > d):
             keep.append(rc)
@@ -94,7 +106,7 @@ class _DecoderBlock(nn.Module):
 
     def forward(self, x, skip):
         x = self.up(x)
-                                                    
+        # Handle size mismatches from odd dimensions
         dh = skip.size(2) - x.size(2)
         dw = skip.size(3) - x.size(3)
         x = F.pad(x, [0, dw, 0, dh])
@@ -103,7 +115,7 @@ class _DecoderBlock(nn.Module):
 
 
 class HeatmapCNN(nn.Module):
-    
+    """U-Net style encoder-decoder for heatmap regression."""
 
     def __init__(self, in_channels: int = 3, base_filters: int = 32, **kwargs):
         super().__init__()
@@ -151,7 +163,10 @@ def heatmap_to_boxes(
     threshold: float = 0.3,
     min_distance: int = 5,
 ) -> np.ndarray:
-    
+    """Convert a heatmap (H_hm, W_hm) to bounding boxes in screen coords.
+
+    Returns (N, 4) array of [x, y, w, h] in original screen space.
+    """
     hm_h, hm_w = heatmap.shape
 
     coords = _peak_local_max_torch(
@@ -172,7 +187,7 @@ def heatmap_to_boxes(
         cy = r * scale_y
         boxes[i] = [cx - bbox_w / 2, cy - bbox_h / 2, bbox_w, bbox_h]
 
-                                                            
+    # Sort by confidence (heatmap value at peak), descending
     confidences = np.array([heatmap[r, c] for r, c in coords])
     order = np.argsort(-confidences)
     return boxes[order]

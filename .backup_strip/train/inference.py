@@ -1,4 +1,8 @@
+"""Inference module for zombie detection.
 
+Provides a unified ZombieDetector class that loads any trained model
+and returns bounding boxes in the format expected by evaluation.py.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +23,14 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 
 
 def resolve_inference_device(device: Optional[str]) -> str:
-    
+    """Resolve ``device`` for inference: pick GPU when available, else CPU (or MPS on macOS).
+
+    * ``None``, ``\"\"``, ``\"auto\"``, ``\"auto_detect\"`` — use CUDA if
+      :func:`torch.cuda.is_available`, else MPS if available, else ``\"cpu\"``.
+    * ``\"cuda\"`` / ``\"gpu\"`` — CUDA when available, otherwise fall back to CPU.
+    * ``\"mps\"`` — Apple MPS when available, else same as ``\"auto\"``.
+    * ``\"cpu\"`` — always CPU.
+    """
     if device is None:
         d = "auto"
     else:
@@ -47,7 +58,7 @@ def load_config(config_path: Optional[str] = None) -> dict:
 
 
 def resolve_weights_path(model_type: str, model_path: str) -> str:
-    
+    """Resolve a checkpoint *file* path from a file or experiment directory."""
     p = Path(model_path).expanduser().resolve()
     if p.is_file():
         return str(p)
@@ -67,7 +78,7 @@ def resolve_weights_path(model_type: str, model_path: str) -> str:
         raise FileNotFoundError(f"No hog_svm.joblib under {p}")
 
     if model_type == "template_match":
-                                                      
+        # Directory mode: template saved at train time
         return str(p)
 
     for name in ("best_model.pt", "last_model.pt"):
@@ -78,7 +89,7 @@ def resolve_weights_path(model_type: str, model_path: str) -> str:
 
 
 def load_train_settings(model_path: str) -> dict:
-    
+    """Load ``train_settings.json`` beside the checkpoint (walk up for YOLO layout)."""
     defaults: dict[str, Any] = {
         "resize": None,
         "preprocessing_variant": "rgb",
@@ -109,7 +120,19 @@ def infer_input_channels(settings: dict) -> int:
 
 
 class ZombieDetector:
-    
+    """Unified inference interface for all zombie detection models.
+
+    Args:
+        model_path: path to weights file **or** experiment directory containing
+            ``best_model.pt`` / Ultralytics ``weights/best.pt`` / ``hog_svm.joblib``.
+        model_type: model name from the registry (e.g., ``yolov8n``, ``heatmap_cnn``).
+        config_path: path to config.yaml.
+        preprocessing_variant: ``rgb``, ``grayscale``, ``rgb_edge``, or ``auto``
+            (read from ``train_settings.json`` when trained with the unified trainer).
+        device: ``cuda``, ``cpu``, ``mps``, or ``auto`` (pick best at runtime).
+        conf_threshold: confidence threshold for detections / heatmap peaks.
+        resize: ``[h, w]``, ``None``, or ``auto`` (from ``train_settings.json``).
+    """
 
     def __init__(
         self,
@@ -203,7 +226,15 @@ class ZombieDetector:
         return model
 
     def detect(self, observation: np.ndarray) -> np.ndarray:
-        
+        """Detect zombies in an observation image.
+
+        Args:
+            observation: (H, W, 3) uint8 image
+
+        Returns:
+            (N, 4) array of [x, y, w, h] bounding boxes in screen coords,
+            ordered from most confident to least.
+        """
         if self.model_type in {"yolov8n", "yolov11n", "rt_detr"}:
             return self._detect_ultralytics(observation)
         if self.model_type in HEATMAP_MODELS:

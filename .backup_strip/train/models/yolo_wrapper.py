@@ -1,4 +1,8 @@
+"""YOLO wrapper for zombie detection using Ultralytics YOLOv8n / YOLOv11n.
 
+Handles dataset export to YOLO format, training via the Ultralytics API,
+and inference with bounding-box output.
+"""
 
 import shutil
 import json
@@ -10,13 +14,16 @@ import yaml
 from PIL import Image
 
 try:
-    from tqdm import tqdm as _tqdm                
-except Exception:                                                      
+    from tqdm import tqdm as _tqdm  # type: ignore
+except Exception:  # pragma: no cover - best-effort optional dependency
     _tqdm = None
 
 
 def _progress(iterable, *, desc: str, unit: str):
-    
+    """Small `tqdm` substitute when tqdm isn't available.
+
+    Prints occasional progress updates; returns a plain iterator otherwise.
+    """
     if _tqdm is not None:
         return _tqdm(iterable, desc=desc, unit=unit, leave=False)
 
@@ -25,7 +32,7 @@ def _progress(iterable, *, desc: str, unit: str):
     if total == 0:
         return iter(items)
 
-                                             
+    # Print ~20 updates max (including last).
     step = max(1, total // 20)
 
     def _it():
@@ -38,7 +45,7 @@ def _progress(iterable, *, desc: str, unit: str):
 
 
 class YOLODetector:
-    
+    """Wraps Ultralytics YOLO for training and inference."""
 
     def __init__(
         self,
@@ -67,13 +74,20 @@ class YOLODetector:
         jpeg_quality: int = 85,
         resize_hw: tuple[int, int] | None = None,
     ):
-        
+        """Convert npy dataset to YOLO txt + images format.
+
+        Creates:
+            output_dir/
+                images/train/  val/  test/
+                labels/train/  val/  test/
+                dataset.yaml
+        """
         output_dir = Path(output_dir)
         image_format = image_format.lower().lstrip(".")
         if image_format not in {"jpg", "jpeg", "png"}:
             raise ValueError(f"Unsupported image_format: {image_format}")
 
-                                                                        
+        # If it already looks exported with the same settings, reuse it.
         yaml_path = output_dir / "dataset.yaml"
         meta_path = output_dir / "export_meta.json"
         meta = {
@@ -96,7 +110,7 @@ class YOLODetector:
             except Exception:
                 pass
 
-                                                                                             
+        # Fresh export (or settings changed): clear old images/labels to avoid mixing formats
         shutil.rmtree(output_dir / "images", ignore_errors=True)
         shutil.rmtree(output_dir / "labels", ignore_errors=True)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -121,12 +135,12 @@ class YOLODetector:
                 img_path = img_out / f"{stem}.{image_format}"
                 lbl_path = lbl_out / f"{stem}.txt"
 
-                                                
+                # Skip work if already exported.
                 if img_path.exists() and lbl_path.exists():
                     continue
 
-                image = np.load(str(obs_path))                                   
-                boxes = np.load(str(box_path))                                        
+                image = np.load(str(obs_path))  # (H, W, 3) uint8 (screen coords)
+                boxes = np.load(str(box_path))  # (N, 4) [x, y, w, h] in screen coords
 
                 img_pil = Image.fromarray(image)
                 out_w, out_h = image.shape[1], image.shape[0]
@@ -134,7 +148,7 @@ class YOLODetector:
                     out_h, out_w = int(resize_hw[0]), int(resize_hw[1])
                     img_pil = img_pil.resize((out_w, out_h), resample=Image.BILINEAR)
 
-                                                                                  
+                    # Scale boxes from screen coords -> resized image pixel coords
                     if len(boxes) > 0:
                         boxes = boxes.copy()
                         sx = out_w / float(screen_w)
@@ -144,8 +158,8 @@ class YOLODetector:
                         boxes[:, 2] *= sx
                         boxes[:, 3] *= sy
                 else:
-                                                                                                        
-                                                                     
+                    # If not resizing, boxes are still in screen coords. Convert to image coords in case
+                    # the stored arrays are not at screen resolution.
                     if (image.shape[1], image.shape[0]) != (screen_w, screen_h) and len(boxes) > 0:
                         boxes = boxes.copy()
                         sx = image.shape[1] / float(screen_w)
@@ -164,7 +178,7 @@ class YOLODetector:
 
                 with open(str(lbl_path), "w") as f:
                     for box in boxes:
-                                                                                             
+                        # Clip boxes to image bounds to keep YOLO labels normalized in [0, 1]
                         x, y, w, h = float(box[0]), float(box[1]), float(box[2]), float(box[3])
                         x1 = max(0.0, x)
                         y1 = max(0.0, y)
@@ -179,7 +193,7 @@ class YOLODetector:
                         cy = (y1 + y2) / 2.0 / float(out_h)
                         nw = cw / float(out_w)
                         nh = ch / float(out_h)
-                                                       
+                        # Extra safety: clamp to [0, 1]
                         cx = min(1.0, max(0.0, cx))
                         cy = min(1.0, max(0.0, cy))
                         nw = min(1.0, max(0.0, nw))
@@ -209,7 +223,7 @@ class YOLODetector:
         name: str = "yolo_train",
         **train_kwargs,
     ) -> dict:
-        
+        """Train YOLO model using Ultralytics API. Returns results dict."""
         if self.model is None:
             self._load_model()
 
@@ -226,7 +240,10 @@ class YOLODetector:
         return results
 
     def predict(self, image: np.ndarray, conf: float = 0.25, **predict_kwargs) -> np.ndarray:
-        
+        """Run inference on a single image (H, W, 3) uint8.
+
+        Returns (N, 4) array of [x, y, w, h] in pixel coords.
+        """
         if self.model is None:
             self._load_model()
 
@@ -248,7 +265,7 @@ class YOLODetector:
         return boxes[order]
 
     def evaluate(self, dataset_yaml: str, split: str = "test") -> dict:
-        
+        """Evaluate on a dataset split."""
         if self.model is None:
             self._load_model()
         return self.model.val(data=dataset_yaml, split=split)

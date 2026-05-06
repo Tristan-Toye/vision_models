@@ -1,11 +1,17 @@
+"""Configurable image preprocessing pipeline for zombie detection.
 
+Each transform takes (image_hwc_uint8, boxes_n4) and returns the same.
+Transforms can be composed and toggled via config.
+"""
 
 import cv2
 import numpy as np
 
 
 class Resize:
-    
+    """Resize image to (target_h, target_w). Boxes are NOT rescaled here
+    because the dataset handles coordinate scaling at target-creation time
+    using the original screen dimensions."""
 
     def __init__(self, target_h: int, target_w: int):
         self.target_h = target_h
@@ -17,7 +23,8 @@ class Resize:
 
 
 class ToGrayscale:
-    
+    """Convert to single-channel grayscale, then replicate to 3 channels
+    so the tensor shape stays consistent."""
 
     def __call__(self, image: np.ndarray, boxes: np.ndarray):
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
@@ -26,7 +33,7 @@ class ToGrayscale:
 
 
 class AddEdgeChannel:
-    
+    """Append a Canny edge-detection channel, making the image 4-channel."""
 
     def __init__(self, low_thresh: int = 50, high_thresh: int = 150):
         self.low = low_thresh
@@ -44,7 +51,7 @@ NUM_MANUAL_FEATURES = len(MANUAL_FEATURE_NAMES)
 
 
 def _compute_lbp(gray: np.ndarray) -> np.ndarray:
-    
+    """Simplified 8-neighbor Local Binary Pattern."""
     h, w = gray.shape
     lbp = np.zeros((h, w), dtype=np.uint8)
     padded = cv2.copyMakeBorder(gray, 1, 1, 1, 1, cv2.BORDER_REFLECT)
@@ -56,7 +63,14 @@ def _compute_lbp(gray: np.ndarray) -> np.ndarray:
 
 
 def compute_manual_features(image: np.ndarray) -> np.ndarray:
-    
+    """Compute 4 handcrafted feature maps from an RGB(+) image.
+
+    Returns (H, W, 4) uint8 array with channels:
+      0: edge magnitude (Sobel)
+      1: gradient orientation
+      2: HSV saturation
+      3: Local Binary Pattern
+    """
     rgb = image[:, :, :3]
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
@@ -81,7 +95,11 @@ def compute_manual_features(image: np.ndarray) -> np.ndarray:
 
 
 class AddManualFeatures:
-    
+    """Append 4 handcrafted feature channels to the image.
+
+    Optional channel_mask allows zeroing out specific feature channels
+    for ablation experiments (indices 0-3 map to MANUAL_FEATURE_NAMES).
+    """
 
     def __init__(self, channel_mask: list[bool] | None = None):
         self.channel_mask = channel_mask
@@ -96,7 +114,7 @@ class AddManualFeatures:
 
 
 class RandomHorizontalFlip:
-    
+    """Flip image and boxes horizontally with probability p."""
 
     def __init__(self, p: float = 0.5):
         self.p = p
@@ -112,7 +130,7 @@ class RandomHorizontalFlip:
 
 
 class RandomBrightnessContrast:
-    
+    """Random brightness and contrast jitter."""
 
     def __init__(self, brightness_range=(0.85, 1.15), contrast_range=(0.85, 1.15)):
         self.b_range = brightness_range
@@ -129,7 +147,7 @@ class RandomBrightnessContrast:
 
 
 class GaussianBlur:
-    
+    """Mild Gaussian blur."""
 
     def __init__(self, kernel_size: int = 3, sigma: float = 0.5):
         self.ksize = kernel_size
@@ -141,7 +159,7 @@ class GaussianBlur:
 
 
 class Compose:
-    
+    """Chain multiple (image, boxes) transforms."""
 
     def __init__(self, transforms: list):
         self.transforms = transforms
@@ -160,7 +178,18 @@ def build_preprocessing_pipeline(
     manual_features: bool = False,
     manual_features_mask: list[bool] | None = None,
 ) -> Compose:
-    
+    """Build a preprocessing pipeline from config.
+
+    Args:
+        cfg: full config dict
+        variant: one of 'rgb', 'grayscale', 'rgb_edge'
+        augment: whether to include data augmentation transforms
+        resize: [h, w] to resize, None for no resize, or "from_config" to
+                read from cfg["preprocessing"]["resize"]
+        manual_features: whether to append handcrafted feature channels
+        manual_features_mask: optional per-channel mask for ablation
+                              (length 4, True=keep, False=zero)
+    """
     transforms = []
 
     if resize == "from_config":

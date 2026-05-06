@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
-                      
+"""Populate zombie_detection/reports/figures/ for experiment_report.tex.
 
+Reads comparison.csv, experiments_results.json, and feature_ablation.csv from
+--results-root, copies representative training curves, and generates summary plots.
+
+Usage:
+  python zombie_detection/reports/build_report_assets.py \\
+      --results-root /media/tristan-toye/ESD-USB/results
+
+Then from zombie_detection/reports/:
+  pdflatex experiment_report.tex
+"""
 
 from __future__ import annotations
 
@@ -148,7 +158,7 @@ def _plot_best_per_model(df: pd.DataFrame, path: Path) -> None:
 
 
 def _plot_preproc_heatmap(df: pd.DataFrame, path: Path) -> None:
-    
+    """Max mixed precision by (model, preprocessing) for resized experiments."""
     df = df.copy()
     df["precision_best_mixed"] = pd.to_numeric(df["precision_best_mixed"], errors="coerce")
     sub = df[df["resize"].astype(str) != "native"].dropna(subset=["precision_best_mixed"])
@@ -249,7 +259,7 @@ def main() -> None:
     df = pd.read_csv(comp_path)
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-                                             
+    # --- Summary plots (always from CSV) ---
     _plot_best_per_model(df, FIGURES_DIR / "summary_best_mixed_per_model.png")
     _plot_preproc_heatmap(df, FIGURES_DIR / "summary_preproc_heatmap.png")
 
@@ -264,7 +274,7 @@ def main() -> None:
             if p.exists():
                 shutil.copy2(p, FIGURES_DIR / name)
 
-                                             
+    # --- Learning curves: PyTorch models ---
     pytorch_specs = [
         ("heatmap_cnn", "learn_heatmap_cnn.png"),
         ("resnet18_head", "learn_resnet18_head.png"),
@@ -279,7 +289,7 @@ def main() -> None:
         else:
             print(f"[SKIP] no row for model={model}")
 
-                                                              
+    # --- YOLO: pick better of v8 / v11 by mixed precision ---
     yolo_model = "yolov11n"
     if _best_experiment_id(df, "yolov11n") is None:
         yolo_model = "yolov8n"
@@ -295,7 +305,7 @@ def main() -> None:
         ok = _copy_or_plot_ultralytics(root, r_eid, "rt_detr", "learn_rt_detr.png", "Ultralytics RT-DETR")
         print(f"[{'OK' if ok else 'MISS'}] rt_detr -> learn_rt_detr.png ({r_eid})")
 
-                                      
+    # --- Classical: bar from JSON ---
     json_path = root / "experiments_results.json"
     if json_path.exists():
         results = json.loads(json_path.read_text())
@@ -303,7 +313,7 @@ def main() -> None:
         _classical_val_bar(results, "template_match", "learn_template_match.png", "Template match (val precision)")
         print("[OK] classical val bars -> learn_hog_svm.png, learn_template_match.png")
 
-                                                                           
+    # --- Export summary table for LaTeX manual paste (optional helper) ---
     summary = []
     for model in sorted(df["model"].unique()):
         eid = _best_experiment_id(df, model)
@@ -321,7 +331,7 @@ def main() -> None:
 
 
 def _write_summary_tables_tex(df: pd.DataFrame, path: Path) -> None:
-    
+    """LaTeX fragment: best per model + top experiments by mixed precision."""
     df = df.copy()
     df["precision_best_mixed"] = pd.to_numeric(df["precision_best_mixed"], errors="coerce")
     best_rows = []

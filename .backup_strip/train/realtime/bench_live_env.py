@@ -1,6 +1,23 @@
 #!/usr/bin/env python3
-                      
+"""Time the zombie detector on **live** KAZ frames (random archer actions, no RL agent).
 
+This steps the PettingZoo environment the same way as ``evaluation.py``, but the
+policy is uniform random. Only **RGB (H,W,3) uint8** observations are timed.
+
+Examples::
+
+    cd /path/to/RL-KAZ
+    PYTHONPATH=. python -m train.realtime.bench_live_env \\
+        --steps 400 --submission-config submission_config.yaml \\
+        --plot timing_live.png
+    # → timing_live.png, timing_live_stats.csv, and a markdown table on stdout
+
+    # Headless, fixed seed
+    PYTHONPATH=. python -m train.realtime.bench_live_env -n 200 --seed 0
+
+    # With window (slower; includes render cost in wall time, not in detector timing)
+    PYTHONPATH=. python -m train.realtime.bench_live_env -n 100 --screen
+"""
 
 from __future__ import annotations
 
@@ -13,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-                                                 
+# Repo root on PYTHONPATH (same as evaluation.py)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -84,7 +101,7 @@ def _collect_timings_live_env(
     screen: bool,
     progress_prefix: str = "",
 ) -> list[float]:
-    
+    """Return a list of detector latencies (ms) on live env observations."""
     from submission import CustomWrapper
 
     render_mode = "human" if screen else None
@@ -160,8 +177,8 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-                                                                                      
-                  
+    # submission-config kept for backwards compatibility but ignored: runtime is fixed
+    # to YOLOv11n.
 
     out = args.plot.expanduser().resolve()
 

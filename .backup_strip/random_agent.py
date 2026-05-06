@@ -8,7 +8,11 @@ from pettingzoo.utils.env import AgentID, ObsType
 
 
 class CustomWrapper(BaseWrapper):
-    
+    """
+    An example of a custom wrapper that flattens the symbolic vector state of the environment.
+
+    Wrappers are useful to do state pre-processing (e.g. feature engineering) that does not need to be learned by the agent.
+    """
 
     def observation_space(self, agent: AgentID) -> gymnasium.spaces.Space:
         return spaces.flatten_space(super().observation_space(agent))
@@ -20,7 +24,7 @@ class CustomWrapper(BaseWrapper):
 
 
 class CustomPredictFunction(Callable):
-    
+    """A random archer agent."""
 
     def __init__(self, env):
         self.env = env
@@ -29,7 +33,7 @@ class CustomPredictFunction(Callable):
         return self.env.action_space(agent).sample()
 
 class CustomZombieDetectorFunction(Callable):
-    
+    """Returns random detections."""
 
     def __init__(self, env: gymnasium.Env):
         pass

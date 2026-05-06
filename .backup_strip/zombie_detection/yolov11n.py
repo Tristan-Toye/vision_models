@@ -9,7 +9,7 @@ from zombie_detection.interface import ZombieDetectorPipeline
 
 
 def _repo_root() -> Path:
-                                                                 
+    # .../vision_models/zombie_detection/yolov11n.py -> repo root
     return Path(__file__).resolve().parents[1]
 
 
@@ -24,7 +24,7 @@ def _resolve_device(device: str) -> str:
     if d == "mps":
         return "mps"
 
-          
+    # auto
     try:
         import torch
 
@@ -39,7 +39,11 @@ def _resolve_device(device: str) -> str:
 
 @dataclass
 class YOLOv11nPipeline(ZombieDetectorPipeline):
-    
+    """Runtime-only YOLOv11n detector (fixed model selection).
+
+    Loads weights from:
+      zombie_detection/yolov11n/weights/best.pt
+    """
 
     device: str = "auto"
     conf_threshold: float = 0.35

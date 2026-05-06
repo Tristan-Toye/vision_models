@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 # encoding: utf-8
-                      
-                 
+"""
+Code used to load an agent and evaluate its performance.
 
+Usage:
+    python3 evaluation.py [-h] [--verbose | --quiet] [--load FILE] [--screen]
+                          [--episodes NUM] [--seed SEED] [--agents NUM] [--output FILE]
+"""
 
 import argparse
 import importlib.util
@@ -25,7 +29,16 @@ logger = logging.getLogger("ml-project")
 def generate_random_seeds(
     num_seeds: int, master_seed: Optional[int] = None
 ) -> List[int]:
-    
+    """
+    Generate a list of random seeds from a master seed.
+
+    Args:
+        num_seeds: Number of seeds to generate
+        master_seed: Optional seed for the random number generator
+
+    Returns:
+        List of random seeds
+    """
     if master_seed is not None:
         random.seed(master_seed)
     return [random.randint(0, 2**32 - 1) for _ in range(num_seeds)]
@@ -37,7 +50,7 @@ def save_results_to_jsonl(
     mode: str = "w",
     agent_id: Optional[str] = None,
 ) -> None:
-    
+    """Save evaluation results to a JSONL file."""
     try:
         result_data = results.copy()
         if agent_id:
@@ -55,7 +68,17 @@ def evaluate(
     predict_function: Callable,
     seeds: List[int],
 ) -> Dict[str, float]:
-    
+    """
+    Evaluate an agent's performance over multiple episodes.
+
+    Args:
+        env: The environment to evaluate in
+        predict_function: Function that takes (obs, agent) and returns action
+        seeds: List of seeds for environment initialization
+
+    Returns:
+        Dictionary containing evaluation metrics
+    """
     rewards = {agent: 0 for agent in env.possible_agents}
     episode_lengths = []
     do_terminate = False
@@ -70,7 +93,7 @@ def evaluate(
             obs, reward, termination, truncation, info = env.last()
             step_count += 1
 
-                                               
+            # Accumulate rewards for all agents
             for a in env.agents:
                 rewards[a] += env.rewards[a]
 
@@ -80,7 +103,7 @@ def evaluate(
 
             action = predict_function(obs, agent)
 
-                                             
+            # Handle rendering and user input
             if env.render_mode == "human":
                 if handle_pygame_events():
                     do_terminate = True
@@ -99,7 +122,7 @@ def evaluate(
     env.close()
     total_time = time.time() - start_time
 
-                          
+    # Calculate statistics
     avg_reward = sum(rewards.values()) / len(seeds)
     avg_reward_per_agent = {
         agent: rewards[agent] / len(seeds) for agent in env.possible_agents
@@ -129,7 +152,7 @@ def evaluate(
 
 
 def evaluate_zombies(predict_function):
-                       
+    # Get all datafiles
     obs_dir = Path(__file__).parent / "observation_data"
     obs_files = list(obs_dir.glob("*_obs.npy"))
     precisions = []
@@ -173,7 +196,7 @@ def evaluate_zombies(predict_function):
 
 
 def handle_pygame_events() -> bool:
-    
+    """Handle pygame events and return True if user requested to quit."""
     events = pygame.event.get()
     for event in events:
         if event.type == pygame.QUIT:
@@ -185,7 +208,7 @@ def handle_pygame_events() -> bool:
 
 
 def load_agent_module(file_path: str) -> Any:
-    
+    """Dynamically load an agent module from the given file path."""
     try:
         spec = importlib.util.spec_from_file_location("KAZ_agent", file_path)
         module = importlib.util.module_from_spec(spec)
@@ -197,7 +220,7 @@ def load_agent_module(file_path: str) -> Any:
 
 
 def setup_logging(verbose: int, quiet: int) -> None:
-    
+    """Configure logging based on verbosity levels."""
     log_level = max(logging.INFO - 10 * (verbose - quiet), logging.DEBUG)
     logger.setLevel(log_level)
     handler = logging.StreamHandler(sys.stdout)
@@ -267,18 +290,18 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     setup_logging(args.verbose, args.quiet)
 
-                               
+    # Environment configuration
     render_mode = "human" if args.screen else None
     logger.info(f"Render mode: {render_mode}")
     if render_mode == "human":
         logger.info("Press Q or close window to terminate evaluation early")
 
-                                        
+    # Generate random seeds for episodes
     seeds = generate_random_seeds(args.episodes, args.seed)
     if not args.zombies:
         logger.info(f"Evaluating with {args.episodes} episodes (master seed: {args.seed})")
 
-                
+    # Load agent
     env_settings = {
         "frame_stack": None,
         "resize_dim": None,
@@ -303,7 +326,7 @@ def main(argv=None) -> int:
         logger.error(f"Failed to load agent: {str(e)}")
         return 1
 
-                                 
+    # Create and wrap environment
     env = create_environment(
         render_mode=render_mode,
         **env_settings,
@@ -311,11 +334,11 @@ def main(argv=None) -> int:
     env = CustomWrapper(env)
 
     if args.zombies:
-                                           
+        # Only evaluate the zombie detector
         results = evaluate_zombies(CustomZombieDetectorFunction(env))
 
     else:
-                                   
+        # Evaluate playing the game
         results = evaluate(env, CustomPredictFunction(env), seeds=seeds)
 
     if args.output:

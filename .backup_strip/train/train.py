@@ -1,4 +1,16 @@
+"""Training framework for zombie detection models.
 
+Supports:
+- Heatmap-based models (HeatmapCNN, ResNet+head) with generic PyTorch loop
+- Faster R-CNN with its own loss computation
+- YOLO / RT-DETR via Ultralytics API (self-training)
+- HOG+SVM / template matching (classical, no gradient loop)
+
+Produces loss curves (train + val) and precision curves over epochs.
+
+Usage:
+    python -m train.train --model heatmap_cnn --config zombie_detection/config.yaml
+"""
 
 import argparse
 import json
@@ -37,10 +49,10 @@ from train.models import (
 from train.models.heatmap_cnn import heatmap_to_boxes
 
 
-                                                                          
+# ──────────────────────────── Loss functions ────────────────────────────
 
 class FocalLoss(nn.Module):
-    
+    """Focal loss for heatmap regression to handle class imbalance."""
 
     def __init__(self, alpha: float = 2.0, beta: float = 4.0):
         super().__init__()
@@ -62,7 +74,7 @@ class FocalLoss(nn.Module):
 
 
 def get_loss_fn(name: str) -> nn.Module:
-    
+    """Return a loss function by name."""
     losses = {
         "mse": nn.MSELoss(),
         "focal": FocalLoss(),
@@ -74,14 +86,15 @@ def get_loss_fn(name: str) -> nn.Module:
     return losses[name]
 
 
-                                                                      
+# ──────────────────────────── Evaluation ────────────────────────────
 
 def compute_precision_iou(
     pred_boxes: np.ndarray,
     gt_boxes: np.ndarray,
     iou_threshold: float = 0.5,
 ) -> float:
-    
+    """Compute detection precision using IoU >= threshold greedy matching.
+    Same metric as evaluation.py."""
     if len(gt_boxes) == 0:
         return 1.0 if len(pred_boxes) == 0 else 0.0
 
@@ -119,7 +132,7 @@ def _iou(r1, r2):
     return inter / float(area1 + area2 - inter)
 
 
-                                                                          
+# ──────────────────────────── Training loops ────────────────────────────
 
 def train_heatmap_model(
     model: nn.Module,
@@ -130,7 +143,7 @@ def train_heatmap_model(
     output_dir: Path,
     model_name: str,
 ) -> dict:
-    
+    """Generic training loop for heatmap-based models."""
     device = cfg["training"]["device"]
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
@@ -156,7 +169,7 @@ def train_heatmap_model(
 
     epoch_bar = tqdm(range(epochs), desc=f"[{model_name}] Epochs", unit="ep")
     for epoch in epoch_bar:
-                     
+        # ── Train ──
         model.train()
         train_losses = []
         train_bar = tqdm(
@@ -175,7 +188,7 @@ def train_heatmap_model(
 
         avg_train_loss = np.mean(train_losses)
 
-                        
+        # ── Validate ──
         model.eval()
         val_losses = []
         precisions = []
@@ -239,7 +252,7 @@ def train_fasterrcnn(
     output_dir: Path,
     model_name: str,
 ) -> dict:
-    
+    """Training loop for Faster R-CNN which computes its own loss."""
     device = cfg["training"]["device"]
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
@@ -262,7 +275,7 @@ def train_fasterrcnn(
 
     epoch_bar = tqdm(range(epochs), desc=f"[{model_name}] Epochs", unit="ep")
     for epoch in epoch_bar:
-                     
+        # ── Train ──
         model.train()
         train_losses = []
 
@@ -289,7 +302,7 @@ def train_fasterrcnn(
         scheduler.step()
         avg_train_loss = np.mean(train_losses)
 
-                               
+        # ── Validate (loss) ──
         model.train()
         val_losses = []
         val_loss_bar = tqdm(
@@ -309,7 +322,7 @@ def train_fasterrcnn(
 
         avg_val_loss = np.mean(val_losses)
 
-                                    
+        # ── Validate (precision) ──
         model.eval()
         precisions = []
 
@@ -374,16 +387,16 @@ def train_yolo_or_detr(
     cfg: dict,
     output_dir: Path,
 ) -> dict:
-    
+    """Train YOLO or RT-DETR using Ultralytics API."""
     from train.models import get_model
 
     detector = get_model(model_name)
     ds_cfg = cfg["dataset"]
     data_dir = PROJECT_ROOT / ds_cfg["base_dir"] / ds_cfg["name"]
 
-                           
-                                                                                             
-                                                                                        
+    # Export to YOLO format
+    # Shared cache across YOLOv8/YOLOv11/RT-DETR experiments to avoid duplicating disk usage.
+    # Store alongside the experiment results root (e.g. USB) so it doesn't fill the SSD.
     results_root = output_dir.parent
     yolo_dir = results_root / "_shared_yolo_dataset" / ds_cfg["name"]
     resize_hw = cfg.get("preprocessing", {}).get("resize")
@@ -396,7 +409,7 @@ def train_yolo_or_detr(
             resize_hw=tuple(resize_hw) if resize_hw is not None else (360, 640),
         )
     else:
-                                       
+        # RT-DETR uses same YOLO format
         from train.models.yolo_wrapper import YOLODetector
         exporter = YOLODetector()
         yaml_path = exporter.export_dataset_to_yolo_format(
@@ -423,7 +436,7 @@ def train_classical(
     cfg: dict,
     output_dir: Path,
 ) -> dict:
-    
+    """Train classical detectors (HOG+SVM, template matching)."""
     from train.models import get_model
 
     detector = get_model(model_name)
@@ -441,7 +454,7 @@ def train_classical(
         if detector.template is not None:
             np.save(str(output_dir / "template_gray.npy"), detector.template)
 
-                         
+    # Evaluate on val set
     val_dir = PROJECT_ROOT / ds_cfg["base_dir"] / ds_cfg["name"] / "val"
     precisions = _evaluate_classical(detector, val_dir)
     avg_p = np.mean(precisions) if precisions else 0.0
@@ -465,10 +478,10 @@ def _evaluate_classical(detector, data_dir: Path) -> list:
     return precisions
 
 
-                                                                    
+# ──────────────────────────── Plotting ────────────────────────────
 
 def _plot_curves(history: dict, output_dir: Path, model_name: str):
-    
+    """Save loss and precision curves as PNG."""
     epochs = range(1, len(history["train_loss"]) + 1)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
@@ -494,7 +507,7 @@ def _plot_curves(history: dict, output_dir: Path, model_name: str):
 
 
 def _save_history(history: dict, output_dir: Path, model_name: str):
-    
+    """Persist raw training history as JSON for later analysis."""
     history_path = output_dir / f"{model_name}_history.json"
     serialisable = {}
     for k, v in history.items():
@@ -508,7 +521,7 @@ def _save_history(history: dict, output_dir: Path, model_name: str):
         json.dump(serialisable, f, indent=2)
 
 
-                                                                      
+# ──────────────────────────── Main entry ────────────────────────────
 
 def train_model(
     model_name: str,
@@ -520,16 +533,22 @@ def train_model(
     resize: "list[int] | None" = "from_config",
     manual_features: bool = False,
 ) -> dict:
-    
+    """Unified entry point: dispatches to the right training loop.
+
+    Args:
+        resize: [h, w] to resize images, None to keep native resolution,
+                or "from_config" to read from cfg["preprocessing"]["resize"].
+        manual_features: whether to append handcrafted feature channels.
+    """
     if output_dir is None:
         output_dir = PROJECT_ROOT / "zombie_detection" / "checkpoints" / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-                            
+    # Resolve resize setting
     if resize == "from_config":
         resize = cfg["preprocessing"].get("resize")
 
-                                                                   
+    # Save settings used for this experiment so inference can match
     with open(output_dir / "train_settings.json", "w") as f:
         json.dump({
             "resize": resize,
@@ -537,14 +556,14 @@ def train_model(
             "manual_features": manual_features,
         }, f)
 
-                                                     
+    # Self-training models (YOLO, RT-DETR, classical)
     if model_name in {"yolov8n", "yolov11n", "rt_detr"}:
         return train_yolo_or_detr(model_name, cfg, output_dir)
 
     if model_name in {"hog_svm", "template_match"}:
         return train_classical(model_name, cfg, output_dir)
 
-                          
+    # PyTorch-based models
     ds_cfg = cfg["dataset"]
     data_dir = PROJECT_ROOT / ds_cfg["base_dir"] / ds_cfg["name"]
 
@@ -559,7 +578,7 @@ def train_model(
         resize=resize, manual_features=manual_features,
     )
 
-                                                                      
+    # Heatmap size matches actual image dimensions after preprocessing
     if resize is not None:
         hm_size = tuple(resize)
     else:
@@ -580,7 +599,7 @@ def train_model(
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate, num_workers=0)
 
-                 
+    # Build model
     from train.preprocessing import NUM_MANUAL_FEATURES
     in_channels = 4 if preprocessing_variant == "rgb_edge" else 3
     if manual_features:
@@ -599,7 +618,7 @@ def train_model(
 
     model = get_model(model_name, **model_kwargs)
 
-                    
+    # Heatmap models
     loss_fn = get_loss_fn(loss_name)
     return train_heatmap_model(model, train_loader, val_loader, loss_fn, cfg, output_dir, model_name)
 

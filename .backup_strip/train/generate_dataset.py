@@ -1,4 +1,14 @@
+"""Generate zombie detection dataset by playing KAZ episodes and capturing
+frames paired with ground-truth zombie bounding boxes.
 
+Each distortion level gets its own set of episodes because zombie-specific
+distortions (levels 3-4: color change, pixel noise) are applied at sprite
+creation time, not at render time. Screen-wide distortions (stars, clouds,
+heat haze) are applied per-frame by the VisualWrapper transform.
+
+Usage:
+    python -m train.generate_dataset [--config zombie_detection/config.yaml]
+"""
 
 import argparse
 import os
@@ -14,8 +24,8 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import visual_utils as vu              
-from visual_utils import set_distortion_level, VisualWrapper              
+import visual_utils as vu  # noqa: E402
+from visual_utils import set_distortion_level, VisualWrapper  # noqa: E402
 
 
 ZOMBIE_SPECIFIC_LEVELS = {3, 4}
@@ -27,7 +37,7 @@ def load_config(config_path: str) -> dict:
 
 
 def get_zombie_positions(env, bbox_w: int, bbox_h: int) -> np.ndarray:
-    
+    """Walk through wrapper chain to reach the raw KAZ env and read zombie rects."""
     inner = env
     while hasattr(inner, "env"):
         inner = inner.env
@@ -38,7 +48,7 @@ def get_zombie_positions(env, bbox_w: int, bbox_h: int) -> np.ndarray:
 
 
 def create_env_for_generation(max_zombies: int, distortion_level: int):
-    
+    """Create a KAZ environment configured for dataset generation."""
     from pettingzoo.butterfly import knights_archers_zombies_v10
     import supersuit as ss
 
@@ -59,17 +69,17 @@ def create_env_for_generation(max_zombies: int, distortion_level: int):
 
 
 def capture_frame(env) -> np.ndarray:
-    
+    """Capture the full-screen observation as (H, W, 3) uint8."""
     inner = env
     while hasattr(inner, "env"):
         inner = inner.env
     screen = pygame.surfarray.pixels3d(inner.screen)
     frame = np.array(screen)
-    return np.swapaxes(frame, 0, 1)                      
+    return np.swapaxes(frame, 0, 1)  # (W,H,3) -> (H,W,3)
 
 
 def relevant_distortion_levels(num_zombies: int, all_levels: list) -> list:
-    
+    """Return only the distortion levels that produce unique images for this frame."""
     if num_zombies > 0:
         return list(all_levels)
     return [l for l in all_levels if l not in ZOMBIE_SPECIFIC_LEVELS]
@@ -81,7 +91,13 @@ def generate_split(
     output_dir: Path,
     cfg: dict,
 ):
-    
+    """Generate one dataset split (train / val / test).
+
+    For each distortion level, runs separate episodes so that zombie-specific
+    distortions (color change, pixel noise) are correctly applied at sprite
+    creation time. Empty frames skip zombie-specific levels since they produce
+    identical results to level 2.
+    """
     bbox_w = cfg["zombie"]["bbox_width"]
     bbox_h = cfg["zombie"]["bbox_height"]
     max_zombies = cfg["dataset"]["max_zombies"]
@@ -92,13 +108,13 @@ def generate_split(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-                        
-    count_tracker = defaultdict(int)                                   
+    # Per-level tracking
+    count_tracker = defaultdict(int)  # zombie_count -> num base frames
     empty_count = 0
     total_base = 0
     global_idx = 0
 
-                                                      
+    # Target per distortion level: divide total evenly
     examples_per_level = num_examples // len(distortion_levels)
     remainder = num_examples % len(distortion_levels)
 
@@ -170,7 +186,7 @@ def generate_split(
         level_bar.close()
         env.close()
 
-                                                                
+    # Check minimum per zombie count and generate more if needed
     for zcount in range(max_zombies + 1):
         deficit = min_per_count - count_tracker.get(zcount, 0)
         if deficit <= 0:
@@ -234,7 +250,7 @@ def generate_split(
         deficit_bar.close()
         env.close()
 
-                               
+    # Report final distribution
     print(f"\n[{split_name}] Done! {total_base} total frames.")
     print(f"  Zombie count distribution:")
     for c in range(max_zombies + 1):

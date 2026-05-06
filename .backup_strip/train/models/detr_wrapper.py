@@ -1,4 +1,8 @@
+"""RT-DETR wrapper using Ultralytics.
 
+Transformer-based end-to-end detector: no NMS needed, uses
+learned object queries to predict detections directly.
+"""
 
 from pathlib import Path
 from typing import Optional
@@ -7,7 +11,7 @@ import numpy as np
 
 
 class RTDETRDetector:
-    
+    """Wraps Ultralytics RT-DETR for training and inference."""
 
     def __init__(
         self,
@@ -50,7 +54,10 @@ class RTDETRDetector:
         return results
 
     def predict(self, image: np.ndarray, conf: float = 0.25, **predict_kwargs) -> np.ndarray:
-        
+        """Run inference on a single image (H, W, 3) uint8.
+
+        Returns (N, 4) array of [x, y, w, h] in pixel coords.
+        """
         if self.model is None:
             self._load_model()
 

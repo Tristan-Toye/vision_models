@@ -17,29 +17,43 @@ def create_environment(
     resize_dim: Optional[tuple[int, int]] = None,
     distortion_level: int = 0,
 ) -> BaseWrapper:
-    
-                    
+    """
+    Create a configured KAZ environment.
+
+    Args:
+        num_agents: Number of archer agents (1 or 2)
+        max_cycles: Maximum steps before episode truncation
+        render_mode: None, "human", or "rgb_array"
+        max_zombies: Maximum number of zombies in the arena
+        visual_observation: Whether to use pixel observations
+        frame_stack: Number of frames to stack (None for no stacking)
+        resize_dim: Tuple (width, height) to resize visual observations
+
+    Returns:
+        A configured PettingZoo environment
+    """
+    # Set parameters
 
     num_agents = 2
     visual_observation = True
 
 
-                             
+    # Create base environment
     env = knights_archers_zombies_v10.env(
         max_cycles=max_cycles,
         num_archers=num_agents,
         num_knights=0,
         max_zombies=max_zombies,
         vector_state=not visual_observation,
-        render_mode= "rgb_array"                                                      
+        render_mode= "rgb_array" # We will handle rendering in VisualWrapper, not here
     )
 
-                                      
+    # Apply visual observation wrapper
     set_distortion_level(level=distortion_level)
     env = VisualWrapper(env)
     env.render_mode = render_mode
 
-                              
+    # Handle agent termination
     env = ss.black_death_v3(env)
 
 

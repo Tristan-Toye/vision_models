@@ -1,4 +1,8 @@
+"""
+This file contains an example of implementation of the CustomWapper and CustomPredictFunction that you need to submit.
 
+Here, we are using Ray RLLib to load the trained agents.
+"""
 
 from pathlib import Path
 import random
@@ -17,7 +21,7 @@ class CustomWrapper(BaseWrapper):
 
     def __init__(self, env, target_size=(64, 64)):
         super().__init__(env)
-        self.target_size = target_size          
+        self.target_size = target_size  # (H, W)
 
     def observation_space(self, agent: AgentID):
         h, w = self.target_size
@@ -33,24 +37,25 @@ class CustomWrapper(BaseWrapper):
         )
 
     def observe(self, agent: AgentID) -> ObsType | None:
-        obs = super().observe(agent)                   
+        obs = super().observe(agent)  # (H, W, C) uint8
 
-                
+        # Resize
         img = Image.fromarray(obs)
         img = img.resize(self.target_size[::-1], Image.BILINEAR)
         obs_small = np.array(img)
 
-                             
+        # Normalize + flatten
         flat_obs = obs_small.astype(np.float32) / 255.0
         return flat_obs.flatten()
 
 
 class CustomPredictFunction(Callable):
-    
+    """ This is an example of an instantiation of the CustomPredictFunction that loads a trained RLLib algorithm from
+    a checkpoint and extract the policies from it"""
 
     def __init__(self, env):
 
-                                                                                     
+        # Here you should load your trained model(s) from a checkpoint in your folder
         best_checkpoint = (Path("results") / "learner_group" / "learner" / "rl_module").resolve()
         self.modules = MultiRLModule.from_checkpoint(best_checkpoint)
 
@@ -67,7 +72,7 @@ class CustomPredictFunction(Callable):
 
 
 class CustomZombieDetectorFunction(Callable):
-    
+    """Returns random detections."""
 
     def __init__(self, env: gymnasium.Env):
         pass
