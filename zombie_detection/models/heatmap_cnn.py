@@ -9,7 +9,68 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from skimage.feature import peak_local_max
+
+
+def _peak_local_max_torch(
+    heatmap: np.ndarray,
+    *,
+    min_distance: int,
+    threshold_abs: float,
+) -> np.ndarray:
+    """Return (N,2) int coords (row, col) of local maxima.
+
+    This is a small replacement for `skimage.feature.peak_local_max` using only
+    PyTorch. It performs max-pooling based local-max detection, applies an
+    absolute threshold, excludes a border of `min_distance`, and then applies a
+    greedy non-maximum suppression so returned peaks are at least `min_distance`
+    apart (Chebyshev distance), similar to skimage defaults.
+    """
+    if heatmap.ndim != 2:
+        raise ValueError(f"Expected 2D heatmap, got shape {heatmap.shape}")
+    if min_distance < 0:
+        raise ValueError("min_distance must be >= 0")
+
+    hm = torch.as_tensor(heatmap, dtype=torch.float32)
+    if hm.numel() == 0:
+        return np.zeros((0, 2), dtype=np.int64)
+
+    # Local-max via (2d+1)x(2d+1) max pool.
+    d = int(min_distance)
+    k = 2 * d + 1
+    hm4 = hm[None, None, :, :]  # (1,1,H,W)
+    pooled = F.max_pool2d(hm4, kernel_size=k, stride=1, padding=d)
+    is_peak = (hm4 == pooled) & (hm4 >= float(threshold_abs))
+
+    # Match skimage default exclude_border=True (effectively excludes a `d` border
+    # when min_distance is used).
+    if d > 0:
+        is_peak[:, :, :d, :] = False
+        is_peak[:, :, -d:, :] = False
+        is_peak[:, :, :, :d] = False
+        is_peak[:, :, :, -d:] = False
+
+    coords = torch.nonzero(is_peak[0, 0], as_tuple=False)  # (M,2) [r,c]
+    if coords.numel() == 0:
+        return np.zeros((0, 2), dtype=np.int64)
+
+    # Greedy NMS to ensure spacing. Sort by confidence descending.
+    scores = hm[coords[:, 0], coords[:, 1]]
+    order = torch.argsort(scores, descending=True)
+    coords = coords[order]
+
+    keep: list[torch.Tensor] = []
+    for rc in coords:
+        if not keep:
+            keep.append(rc)
+            continue
+        kept = torch.stack(keep, dim=0)  # (K,2)
+        # Chebyshev distance (max(|dr|,|dc|)) like a square footprint.
+        dist = torch.max(torch.abs(kept - rc), dim=1).values
+        if torch.all(dist > d):
+            keep.append(rc)
+
+    kept_coords = torch.stack(keep, dim=0).to(dtype=torch.int64)
+    return kept_coords.cpu().numpy()
 
 
 class _EncoderBlock(nn.Module):
@@ -108,7 +169,7 @@ def heatmap_to_boxes(
     """
     hm_h, hm_w = heatmap.shape
 
-    coords = peak_local_max(
+    coords = _peak_local_max_torch(
         heatmap,
         min_distance=min_distance,
         threshold_abs=threshold,

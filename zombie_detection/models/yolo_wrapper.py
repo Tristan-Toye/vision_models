@@ -12,7 +12,36 @@ from typing import Optional
 import numpy as np
 import yaml
 from PIL import Image
-from tqdm import tqdm
+
+try:
+    from tqdm import tqdm as _tqdm  # type: ignore
+except Exception:  # pragma: no cover - best-effort optional dependency
+    _tqdm = None
+
+
+def _progress(iterable, *, desc: str, unit: str):
+    """Small `tqdm` substitute when tqdm isn't available.
+
+    Prints occasional progress updates; returns a plain iterator otherwise.
+    """
+    if _tqdm is not None:
+        return _tqdm(iterable, desc=desc, unit=unit, leave=False)
+
+    items = list(iterable)
+    total = len(items)
+    if total == 0:
+        return iter(items)
+
+    # Print ~20 updates max (including last).
+    step = max(1, total // 20)
+
+    def _it():
+        for i, x in enumerate(items, start=1):
+            if i == 1 or i % step == 0 or i == total:
+                print(f"{desc}: {i}/{total} {unit}", flush=True)
+            yield x
+
+    return _it()
 
 
 class YOLODetector:
@@ -97,7 +126,7 @@ class YOLODetector:
             lbl_out.mkdir(parents=True, exist_ok=True)
 
             obs_files = sorted(split_dir.glob("*_obs.npy"))
-            for obs_path in tqdm(obs_files, desc=f"  Export YOLO [{split}]", unit="img", leave=False):
+            for obs_path in _progress(obs_files, desc=f"  Export YOLO [{split}]", unit="img"):
                 stem = obs_path.name.replace("_obs.npy", "")
                 box_path = split_dir / f"{stem}_zombies.npy"
                 if not box_path.exists():

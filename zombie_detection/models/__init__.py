@@ -5,7 +5,10 @@ from zombie_detection.models.resnet_backbone import ResNetDetector
 from zombie_detection.models.yolo_wrapper import YOLODetector
 from zombie_detection.models.fasterrcnn_wrapper import FasterRCNNDetector
 from zombie_detection.models.detr_wrapper import RTDETRDetector
-from zombie_detection.models.sliding_window import HOGSVMDetector, TemplateMatchDetector
+
+# NOTE: `sliding_window` depends on optional third-party packages (e.g. sklearn).
+# Keep it lazily imported so environments without those deps can still run
+# other models (submission pipelines, benchmarking, etc.).
 
 MODEL_REGISTRY = {
     "heatmap_cnn": HeatmapCNN,
@@ -15,8 +18,8 @@ MODEL_REGISTRY = {
     "yolov11n": lambda **kw: YOLODetector(model_name="yolo11n", **kw),
     "faster_rcnn": FasterRCNNDetector,
     "rt_detr": RTDETRDetector,
-    "hog_svm": HOGSVMDetector,
-    "template_match": TemplateMatchDetector,
+    "hog_svm": "zombie_detection.models.sliding_window:HOGSVMDetector",
+    "template_match": "zombie_detection.models.sliding_window:TemplateMatchDetector",
 }
 
 # Models that use their own training loop (not the generic train.py loop)
@@ -31,6 +34,19 @@ def get_model(name: str, **kwargs):
     if name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model: {name}. Available: {list(MODEL_REGISTRY.keys())}")
     factory = MODEL_REGISTRY[name]
+    if isinstance(factory, str):
+        # Lazy import to avoid importing optional deps unless needed.
+        mod_path, attr = factory.split(":", 1)
+        try:
+            import importlib
+
+            mod = importlib.import_module(mod_path)
+            factory = getattr(mod, attr)
+        except Exception as e:
+            raise ModuleNotFoundError(
+                f"Model {name!r} requires optional dependencies. "
+                f"Failed to import {factory} ({type(e).__name__}: {e})."
+            ) from e
     return factory(**kwargs)
 
 

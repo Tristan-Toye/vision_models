@@ -22,7 +22,7 @@
 }{%
   \typeout{No figures/summary_tables.tex — run build_report_assets.py first.}%
   \providecommand{\SummaryBestMixedTable}{\emph{Run \texttt{build\_report\_assets.py} to generate tables.}}%
-  \providecommand{\SummaryTopFiveTable}{}%
+  \providecommand{\SummaryTopFiveTable}{\emph{Run \texttt{build\_report\_assets.py} to generate tables.}}%
 }
 
 \title{Zombie Detection Experiments (Task~3)\\\large Model Comparison, Robustness to Distortion, and Feature Ablations}
@@ -168,10 +168,39 @@ Figure~\ref{fig:bar} summarizes the same ranking.
   \label{fig:bar}
 \end{figure}
 
+\section{Real-time benchmark (accuracy vs latency)}
+\label{sec:realtime}
+While Tables~\ref{tab:bestmixed}--\ref{tab:topfive} summarize \emph{offline} mixed-test precision, the deployed agent must run the detector inside the simulator loop.
+We therefore benchmarked the submission pipelines on \textbf{live} KAZ observations with \textbf{random archer actions} (no RL policy) using \texttt{python -m zombie\_detection.realtime.bench\_live\_env}.
+For each model, we timed $n=500$ calls to \texttt{pipeline.detect} (RGB frames only) and report mean and standard deviation in milliseconds; mixed-test precision is copied from Table~\ref{tab:bestmixed}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Live-environment detector latency vs.\ mixed-test precision ($n=500$ timed RGB frames; $\texttt{conf\_threshold}=0.35$, device auto).}
+  \label{tab:realtime_tradeoff}
+  \small
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    \textbf{Model} & \textbf{Mixed precision} & \textbf{Mean ms} & \textbf{Std ms} & \textbf{Notes} \\
+    \midrule
+    rt\_detr        & 0.9897 & 505.5148 & 117.6174 & highest precision, highest latency \\
+    yolov11n        & 0.9876 & 35.1068  & 9.4969   & strong precision, low latency \\
+    yolov8n         & 0.9813 & 32.2303  & 4.6079   & slightly faster, lower precision \\
+    resnet18\_head  & 0.9833 & 116.1268 & 10.7505  & mid latency, mid precision \\
+    heatmap\_cnn    & 0.9848 & 403.3244 & 24.6948  & high latency in our setup \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\noindent\textbf{Conclusion.}
+RT-DETR is marginally better on mixed-test precision, but its live inference latency is an order of magnitude higher than YOLOv11n in our deployment loop (Table~\ref{tab:realtime_tradeoff}).
+Given the real-time constraints of KAZ, we therefore \textbf{select YOLOv11n} as the submission model: it is nearly as accurate as RT-DETR while being dramatically faster.
+
 \section{Conclusions}
 \label{sec:conc}
 \begin{itemize}[noitemsep]
   \item Under our protocol, \textbf{RT-DETR} and \textbf{YOLOv11n} achieve the highest \texttt{mixed} test precision (Table~\ref{tab:bestmixed}), aligning with the reported accuracy--speed profile of RT-DETR on COCO-like data~\citep{zhao2024rtdetr} and the continued evolution of the YOLO line~\citep{redmon2017yolo9000,ultralytics_yolo_docs} (see also the third-party YOLO11 survey~\citep{khanam2024yolo11}).
+  \item A live environment benchmark (Sec.~\ref{sec:realtime}) shows that \textbf{YOLOv11n} provides the best accuracy--latency trade-off for real-time deployment; despite slightly higher mixed precision, RT-DETR is too slow in our loop.
   \item \textbf{Heatmap CNNs with manual features} reach strong mixed precision at the heatmap training resolution, supporting RQ3: engineered channels help under combined distortions.
   \item \textbf{Faster R-CNN (torchvision), HOG+SVM, and template matching} score near zero under \texttt{mixed} in this campaign (Table~\ref{tab:bestmixed}); we treat them as negative controls or as requiring a different hyperparameter/label protocol, not as evidence that two-stage or classical methods are inherently unusable on KAZ~\citep{ren2015fasterrcnn,dalal2005hog}.
   \item For \textbf{resource-constrained deployment}, heatmap+manual-feature models trade a small precision gap for predictable CNN cost; YOLO/RT-DETR remain preferable when Ultralytics training and weights are acceptable.

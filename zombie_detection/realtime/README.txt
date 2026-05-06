@@ -55,7 +55,7 @@ histogram + mean printed to the console, use::
 
   cd /path/to/RL-KAZ
   PYTHONPATH=. python -m zombie_detection.realtime.bench_live_env \\
-      -n 400 --submission-config submission_config.yaml \\
+      -n 100 --submission-config submission_config.yaml \\
       --plot timing_live.png
 
 ``-n`` is how many RGB frames to time; ``--screen`` enables human render
