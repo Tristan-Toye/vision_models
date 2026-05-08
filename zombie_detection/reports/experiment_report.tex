@@ -1,0 +1,473 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[numbers,sort&compress]{natbib}
+
+\graphicspath{{figures/}}
+
+\IfFileExists{figures/summary_tables.tex}{%
+  \input{figures/summary_tables.tex}%
+}{%
+  \typeout{No figures/summary_tables.tex found.}%
+  \providecommand{\SummaryBestMixedTable}{\emph{Generate \texttt{figures/summary\_tables.tex} to render this table.}}%
+  \providecommand{\SummaryTopFiveTable}{\emph{Generate \texttt{figures/summary\_tables.tex} to render this table.}}%
+}
+
+\IfFileExists{figures/extra_tables.tex}{%
+  \input{figures/extra_tables.tex}%
+}{%
+  \typeout{No figures/extra_tables.tex found.}%
+  \providecommand{\TrainingConfigTable}{\emph{Generate \texttt{figures/extra\_tables.tex} to render this table.}}%
+  \providecommand{\AblationLOOTable}{\emph{Generate \texttt{figures/extra\_tables.tex} to render this table.}}%
+  \providecommand{\AblationSingleFeatureTable}{\emph{Generate \texttt{figures/extra\_tables.tex} to render this table.}}%
+  \providecommand{\TopFiveMeanIoUTable}{\emph{Generate \texttt{figures/extra\_tables.tex} to render this table.}}%
+  \providecommand{\MergedTopFiveTable}{\emph{Generate \texttt{figures/extra\_tables.tex} to render this table.}}%
+}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    urlcolor=blue,
+    citecolor=green!50!black,
+}
+
+\title{\textbf{Multi-Agent Learning Dynamics and Robust Object Detection\\in Knights, Archers and Zombies}\\[0.35em]
+\large Machine Learning Project 2025--2026}
+\author{RL-KAZ}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{Introduction}
+\label{sec:intro}
+
+Multi-agent reinforcement learning (MARL) poses fundamental challenges in equilibrium selection, coordination under uncertainty, and robustness to non-stationary opponents~\citep{hernandez2019marl,tuyls2012}. This report addresses two complementary aspects of MARL within the Knights, Archers and Zombies (KAZ) environment~\citep{terry2021pettingzoo,pettingzoo_kaz}: (i)~the theoretical and empirical analysis of independent learning dynamics in canonical matrix games (Section~\ref{sec:task2}), and (ii)~a systematic comparison of object detection architectures for robust zombie localisation under visual distortion (Section~\ref{sec:task3}).
+
+For the first component, we investigate three independent learners in self-play---$\varepsilon$-greedy Q-learning, Boltzmann Q-learning, and Lenient Boltzmann Q-learning---across four benchmark games: Stag Hunt, Subsidy Game, Biased Rock-Paper-Scissors, and Prisoner's Dilemma. We characterise their convergence behaviour and validate empirical trajectories against the continuous-time dynamics derived by \citet{bloembergen2015}.
+
+For the second component, we evaluate six detector families---from classical HOG+SVM and template matching through heatmap CNNs with handcrafted features to modern one-stage (YOLO) and transformer-based (RT-DETR) architectures---on a purpose-built dataset of KAZ frames with controlled distortion levels. We report held-out precision stratified by distortion severity and present a real-time latency benchmark to inform deployment decisions.
+
+% ============================================================
+\section{Matrix Games: Learning Dynamics}
+\label{sec:task2}
+
+\subsection{Problem Setting}
+\label{sec:task2_setting}
+
+We consider two-player normal-form games in which each player $i \in \{1,2\}$ selects an action from a finite set and receives a payoff determined by the joint action profile. The game is defined by payoff matrices $A$ and $B$ for players~1 and~2, respectively. Under mixed strategies $\mathbf{x} \in \Delta^{|A|}$ and $\mathbf{y} \in \Delta^{|B|}$, the expected payoffs are $\mathbf{x}^\top A \mathbf{y}$ and $\mathbf{x}^\top B \mathbf{y}$~\citep{nash1950}.
+
+We study four games that span distinct strategic structures:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Stag Hunt} --- a coordination game with two pure Nash equilibria (NE): the payoff-dominant $(S,S)$ and the risk-dominant $(H,H)$.
+  \item \textbf{Subsidy Game} --- a coordination game where the Pareto-optimal NE $(S_1,S_1)$ is payoff-dominant but $(S_2,S_2)$ is risk-dominant.
+  \item \textbf{Biased Rock-Paper-Scissors} --- a zero-sum game with a unique interior mixed NE and no convergence under deterministic dynamics.
+  \item \textbf{Prisoner's Dilemma} --- a social dilemma where the unique NE $(D,D)$ is Pareto-dominated by mutual cooperation $(C,C)$.
+\end{itemize}
+
+\subsection{Nash Equilibria and Pareto Optimality}
+\label{sec:nash}
+
+Table~\ref{tab:nash} summarises the Nash equilibria and Pareto-optimal outcomes for each game. These serve as the theoretical reference points against which we evaluate the learning algorithms.
+
+\begin{table}[H]
+\centering
+\caption{Nash equilibria and Pareto-optimal outcomes for the four benchmark games.}
+\label{tab:nash}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{p{4cm}|p{4cm}|p{4cm}}
+\toprule
+\textbf{Game} & \textbf{Nash Equilibria} & \textbf{Pareto Optimal} \\
+\midrule
+Stag Hunt &
+  Pure: $(S,S){=}(1,1)$, $(H,H){=}(\frac{2}{3},\frac{2}{3})$ &
+  $(S,S){=}(1,1)$ \\
+\hline
+Subsidy Game &
+  Pure: $(S_1,S_1){=}(12,12)$, $(S_2,S_2){=}(10,10)$ &
+  $(S_1,S_1){=}(12,12)$ \\
+\hline
+Biased RPS &
+  Mixed: unique interior strategy &
+  None (zero-sum) \\
+\hline
+Prisoner's Dilemma &
+  Pure: $(D,D){=}(-3,-3)$ &
+  $(C,C){=}(-1,-1)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The key implications are as follows. In Stag Hunt and Subsidy Game, the presence of multiple equilibria creates a coordination challenge: learners must select the payoff-dominant equilibrium over the risk-dominant alternative. In Biased RPS, the unique mixed NE implies that learning dynamics are expected to cycle rather than converge. In the Prisoner's Dilemma, the unique NE at mutual defection is Pareto-suboptimal, and no independent learning algorithm can sustain cooperation without explicit coordination mechanisms.
+
+\subsection{Learning Algorithms}
+\label{sec:algorithms}
+
+We compare three independent learning algorithms in self-play, following the framework of \citet{bloembergen2015}:
+
+\paragraph{$\varepsilon$-Greedy Q-Learning.}
+Each agent maintains incremental mean reward estimates $\bar{r}(a)$ for each action $a$ and selects greedily with probability $1-\varepsilon$, exploring uniformly otherwise~\citep{sutton2018}. This algorithm does not model the opponent's strategy and is susceptible to locking into suboptimal equilibria.
+
+\paragraph{Boltzmann Q-Learning.}
+Agents select actions according to a softmax (Boltzmann) policy $\pi(a) = \exp(Q(a)/\tau) / \sum_b \exp(Q(b)/\tau)$, where Q-values are updated via $Q(a) \leftarrow Q(a) + \alpha[r - Q(a)]$ with $\gamma = 0$ for stateless games~\citep{watkins1992}. The temperature $\tau$ controls the exploration--exploitation trade-off. The continuous-time limit yields the Q-learning dynamics~\citep{bloembergen2015}:
+\begin{equation}
+\label{eq:ql_dynamics}
+\dot{x}_a = x_a \cdot \alpha \left[ \frac{f_a - \bar{f}}{\tau} + \sum_{b} x_b \ln\!\left(\frac{x_b}{x_a}\right) \right],
+\end{equation}
+where $f_a$ is the expected payoff for action $a$ and $\bar{f} = \sum_a x_a f_a$ is the mean payoff. The first term acts as replicator-like selection pressure, while the second provides entropy-driven exploration.
+
+\paragraph{Lenient Boltzmann Q-Learning.}
+Introduced by \citet{panait2006}, leniency buffers $\kappa$ reward samples per action and updates Q-values using only the maximum observed reward. This mechanism filters out penalties caused by the partner's exploratory actions, effectively enlarging the basin of attraction of Pareto-optimal equilibria in coordination games. For $\kappa = 1$, the algorithm reduces to standard Boltzmann Q-learning. In the continuous-time limit, the expected payoff $f_a$ in Equation~\eqref{eq:ql_dynamics} is replaced by the expected maximum payoff over $\kappa$ samples~\citep{panait2006,bloembergen2015}.
+
+\subsection{Experimental Setup}
+All experiments use $50{,}000$ iterations of self-play with learning rate $\alpha = 0.01$, temperature $\tau = 0.5$, exploration rate $\varepsilon = 0.1$ (for $\varepsilon$-greedy), and leniency parameter $\kappa = 5$ (for Lenient Boltzmann). Trajectories are recorded every 10 iterations and overlaid on the theoretical vector fields computed from Equation~\eqref{eq:ql_dynamics}.
+
+\subsection{Results and Analysis}
+\label{sec:task2_results}
+
+Table~\ref{tab:convergence} summarises the convergence behaviour of each algorithm across the four games. Figures~\ref{fig:stag}--\ref{fig:pd} present representative vector fields and empirical trajectories.
+
+\begin{table}[H]
+\centering
+\caption{Convergence behaviour by algorithm and game ($50{,}000$ iterations, $\tau{=}0.5$, $\kappa{=}5$).}
+\label{tab:convergence}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{p{3.2cm}|p{3.5cm}|p{3.5cm}|p{3.5cm}}
+\toprule
+\textbf{Game} & \textbf{$\varepsilon$-Greedy} & \textbf{Boltzmann} & \textbf{Lenient Boltzmann} \\
+\midrule
+Stag Hunt &
+  Init.-dependent; $\varepsilon$-noise causes coordination failure &
+  Basin-dependent convergence to either NE &
+  Enlarged basin for Pareto-optimal $(S,S)$ \\
+\hline
+Subsidy Game &
+  Often converges to $(S_2,S_2)$ &
+  Often converges to $(S_2,S_2)$ &
+  More frequently reaches $(S_1,S_1)$ \\
+\hline
+Prisoner's Dilemma &
+  Converges to $(D,D)$ &
+  Converges to $(D,D)$ &
+  Converges to $(D,D)$ \\
+\hline
+Biased RPS &
+  Locks onto exploitable pure action &
+  Cycles around mixed NE &
+  Cycles around mixed NE \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.48\linewidth}
+    \includegraphics[width=\linewidth]{stag_hunt_boltzmann_Q_learning_vectorfield.png}
+    \caption{Boltzmann: vector field with trajectories.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\linewidth}
+    \includegraphics[width=\linewidth]{stag_hunt_lenient_boltzmann_Q_learning_vectorfield.png}
+    \caption{Lenient Boltzmann: enlarged Pareto basin.}
+  \end{subfigure}
+  \caption{Stag Hunt: policy-space dynamics. The lenient variant expands the basin of attraction toward the payoff-dominant equilibrium $(S,S)$.}
+  \label{fig:stag}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.48\linewidth}
+    \includegraphics[width=\linewidth]{subsidy_game_boltzmann_Q_learning_vectorfield.png}
+    \caption{Boltzmann: risk-dominant $(S_2,S_2)$ attracts most trajectories.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\linewidth}
+    \includegraphics[width=\linewidth]{subsidy_game_lenient_boltzmann_Q_learning_vectorfield.png}
+    \caption{Lenient Boltzmann: leniency overcomes the risk-dominance trap.}
+  \end{subfigure}
+  \caption{Subsidy Game: the benefit of leniency is most pronounced here, shifting convergence toward the Pareto-optimal $(S_1,S_1)$.}
+  \label{fig:subsidy}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.48\linewidth}
+    \includegraphics[width=\linewidth]{biased_rock_paper_scissors_boltzmann_Q_learning_vectorfield.png}
+    \caption{Boltzmann: persistent cycling around the mixed NE.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\linewidth}
+    \includegraphics[width=\linewidth]{biased_rock_paper_scissors_lenient_boltzmann_Q_learning_vectorfield.png}
+    \caption{Lenient Boltzmann: cycling persists; leniency offers no benefit.}
+  \end{subfigure}
+  \caption{Biased RPS: both Boltzmann variants cycle around the unique mixed NE, consistent with the zero-sum structure.}
+  \label{fig:rps}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.48\linewidth}
+    \includegraphics[width=\linewidth]{prisoners_dilemma_boltzmann_Q_learning_vectorfield.png}
+    \caption{Boltzmann: rapid convergence to $(D,D)$.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\linewidth}
+    \includegraphics[width=\linewidth]{prisoners_dilemma_lenient_boltzmann_Q_learning_vectorfield.png}
+    \caption{Lenient Boltzmann: convergence to $(D,D)$ is unchanged.}
+  \end{subfigure}
+  \caption{Prisoner's Dilemma: all algorithms converge to the unique NE at mutual defection; leniency cannot overcome strict dominance.}
+  \label{fig:pd}
+\end{figure}
+
+\subsection{Discussion}
+\label{sec:task2_discussion}
+
+The empirical trajectories consistently align with the theoretical vector fields derived from the continuous-time limit of Boltzmann Q-learning (Equation~\ref{eq:ql_dynamics}), validating both our implementation and the analytical approximation of \citet{bloembergen2015}. Three key findings emerge:
+
+\begin{enumerate}[noitemsep]
+  \item \textbf{$\varepsilon$-Greedy limitations.} Without a model of the opponent's mixed strategy, $\varepsilon$-greedy Q-learning is prone to locking into suboptimal pure strategies. In Biased RPS, it collapses to an exploitable pure action rather than approximating the mixed NE.
+
+  \item \textbf{Boltzmann dynamics.} The softmax policy produces smooth trajectories that faithfully follow the predicted vector field. In dominance-solvable games (Prisoner's Dilemma), convergence to the unique NE is rapid. In coordination games, the algorithm exhibits multi-attractor behaviour with basin boundaries matching the theoretical separatrices.
+
+  \item \textbf{Leniency as a coordination mechanism.} Lenient Boltzmann Q-learning provides a principled improvement in coordination games by filtering out penalties from the partner's exploratory behaviour, thereby enlarging the basin of attraction of Pareto-optimal equilibria. The effect is most pronounced in the Subsidy Game, where leniency overcomes the risk-dominance trap. However, in games with a unique NE (Prisoner's Dilemma) or cyclic dynamics (Biased RPS), leniency offers no qualitative improvement.
+\end{enumerate}
+% ============================================================
+\section{Zombie Detection Under Visual Distortion}
+\label{sec:task3}
+
+\subsection{Motivation and Related Work}
+\label{sec:task3_intro}
+
+The KAZ environment requires agents to detect and localise zombies from pixel observations that may be affected by visual distortions, such as noise, blur, and colour perturbation~\citep{mlproject2026}. Robustness to these corruptions is a well-documented challenge in computer vision; \citet{hendrycks2019benchmarking} provides a systematic benchmark that demonstrates significant performance degradation of standard convolutional neural networks under common image corruptions. Because no dedicated detection benchmark exists for KAZ, a purpose-built evaluation pipeline was developed, and detector selection was informed by the broader object detection literature~\citep{liu2020deep,ren2015fasterrcnn,zhao2024rtdetr}.
+\newline
+\noindent We formulate four research questions to structure our experimental design:
+\begin{description}[style=nextline,font=\normalfont\bfseries,noitemsep]
+  \item[RQ1 (Detector family)] Which detector families maximise test precision on the mixed distortion pool within our training and resolution constraints?
+  \item[RQ2 (Transfer vs.\ scratch)] When is ImageNet/COCO pre-training preferable to training from scratch?
+  \item[RQ3 (Handcrafted features)] Do handcrafted channels (edges, HSV saturation, LBP) improve heatmap-based detectors under strong distortion, and are they complementary?
+  \item[RQ4 (Baseline comparison)] How do classical and two-stage baselines compare to modern one-stage and transformer-based detectors?
+\end{description}
+
+\subsection{Dataset and Experimental Protocol}
+\label{sec:dataset}
+
+\paragraph{Data generation.}
+Frames are generated by stepping the KAZ environment via the PettingZoo parallel API~\citep{terry2021pettingzoo}, applying configured distortion levels, and rendering \texttt{rgb\_array} observations at $1280 \times 720$ pixels. Each sample consists of an RGB frame paired with ground-truth axis-aligned bounding boxes for all visible zombies.
+
+\paragraph{Data splits.}
+We follow standard supervised learning practice with $8{,}000$ training, $1{,}000$ validation, and $1{,}000$ test frames. Model parameters are updated on the training set only; validation monitors loss and precision each epoch; the test set is held out for final distortion-stratified evaluation. Stochastic augmentation is applied exclusively to training data~\citep{shorten2019augmentation} (random horizontal flip with $p{=}0.5$, random brightness/contrast scaling in $[0.85, 1.15]$, and Gaussian blur with kernel $3{\times}3$ and $\sigma{=}0.5$).
+.
+
+\paragraph{Resolution.}
+Heatmap CNNs, ResNet heads, and Faster~R-CNN consume frames resized to $360 \times 640$; YOLO and RT-DETR use Ultralytics-format exports at the same training resolution.
+
+\subsubsection{Training configuration summary}
+\label{sec:training_configs}
+Table~\ref{tab:traincfg} summarises the configuration factors explored per detector family (loss, pre-training, preprocessing pipeline, resolution, and whether handcrafted feature channels were used). This compact view makes explicit which families were compared under which conditions.
+
+\begin{table}[H]
+  \centering
+  \caption{Training configurations explored per model family (set-valued summary).}
+  \label{tab:traincfg}
+  \small
+  \resizebox{\linewidth}{!}{\TrainingConfigTable}
+\end{table}
+
+\subsection{Evaluation Metric}
+\label{sec:metric}
+
+For predicted boxes $\mathcal{P}$ and ground-truth boxes $\mathcal{G}$, we use greedy one-to-one matching: a prediction matches an unmatched ground-truth box if $\mathrm{IoU} \geq 0.5$, following the PASCAL VOC convention~\citep{everingham2010pascal}. With $M$ matched pairs:
+\begin{equation}
+  \text{precision}_{\mathrm{IoU \geq 0.5}} =
+  \begin{cases}
+    1 & \text{if }|\mathcal{G}|=0\text{ and }|\mathcal{P}|=0,\\
+    0 & \text{if }|\mathcal{G}|=0\text{ and }|\mathcal{P}|>0,\\
+    M/|\mathcal{G}| & \text{otherwise.}
+  \end{cases}
+\end{equation}
+Test precision is stratified by distortion level: \emph{none}, \emph{low}, \emph{high}, \emph{extreme}, and \emph{mixed} (uniform sample across all levels).
+
+\subsection{Model Families}
+\label{sec:models}
+
+Table~\ref{tab:refs} summarises the six detector families evaluated. The selection spans classical methods (HOG+SVM, template matching), a custom heatmap CNN with U-Net-style dense prediction~\citep{ronneberger2015unet}, ImageNet-pretrained ResNet heads~\citep{he2016resnet}, the two-stage Faster~R-CNN~\citep{ren2015fasterrcnn}, and modern one-stage architectures including YOLOv8n/v11n~\citep{redmon2018yolov3,ultralytics_yolo_docs,khanam2024yolo11} and RT-DETR~\citep{zhao2024rtdetr,carion2020detr}.
+
+\begin{table}[H]
+  \centering
+  \caption{Detector families evaluated: architectures and primary references.}
+  \label{tab:refs}
+  \small
+  \begin{tabular}{@{}p{3.1cm}p{4.2cm}p{6.4cm}@{}}
+    \toprule
+    \textbf{Family} & \textbf{Source} & \textbf{Reference} \\
+    \midrule
+    Heatmap CNN & Project code & U-Net~\citep{ronneberger2015unet}; focal loss~\citep{lin2017focal} \\
+    ResNet-18/50 head & Project code & ResNet~\citep{he2016resnet} \\
+    YOLOv8n / YOLOv11n & Ultralytics & YOLO~\citep{redmon2017yolo9000,redmon2018yolov3,khanam2024yolo11} \\
+    RT-DETR & Ultralytics & RT-DETR~\citep{zhao2024rtdetr}; DETR~\citep{carion2020detr} \\
+    Faster R-CNN & TorchVision & Faster R-CNN~\citep{ren2015fasterrcnn} \\
+    HOG+SVM / Template & OpenCV & HOG~\citep{dalal2005hog}; \citealp{szeliski2010cv} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Aggregate Results}
+\label{sec:results}
+
+ Table~\ref{tab:topfive} provides a distortion-stratified breakdown for the top-performing configurations. Figure~\ref{fig:bar} visualises the ranking.
+
+\begin{table}[H]
+  \centering
+  \caption{Top configurations by distortion with mean IoU on the mixed test pool. Columns: n = none, l = low, h = high, e = extreme, m = mixed.}
+  \label{tab:topfive}
+  \resizebox{\linewidth}{!}{\MergedTopFiveTable}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\linewidth]{summary_best_mixed_per_model.png}
+  \caption{Maximum mixed-pool test precision per model family across all configurations.}
+  \label{fig:bar}
+\end{figure}
+
+\paragraph{Key findings.}
+One-stage Ultralytics models (YOLOv8n, YOLOv11n) and RT-DETR achieve the highest mixed-pool precision ($>0.98$), consistent with the effectiveness of large-scale detection pre-training on COCO~\citep{pan2010transfer,yosinski2014transfer}. Heatmap CNNs augmented with handcrafted features remain competitive, supporting RQ3: engineered channels (edges, HSV saturation, LBP~\citep{ojala2002lbp}) provide complementary information under combined distortions. Faster~R-CNN, HOG+SVM, and template matching yield near-zero precision under mixed distortion in our configuration, serving as negative baselines.
+
+\subsection{Learning behaviour and training dynamics}
+\label{sec:learning_dynamics_detectors}
+Figure~\ref{fig:learn_resnet_frcnn} shows the learning curves for representative project-trained models (ResNet-18 head, Faster~R-CNN). The ResNet head steadily reduces training loss while validation precision increases, indicating that the heatmap-style formulation and augmentation are sufficient to learn stable localisation under distortion at $360\times640$.
+
+Faster~R-CNN, by contrast, achieves poor test performance in our setting (Section~\ref{sec:results}). In practice, this is consistent with two compounding issues in our pipeline: (i)~the region-proposal and classification heads are more sensitive to domain shift and resolution constraints than the one-stage alternatives, and (ii)~our dataset and training schedule are comparatively small for a two-stage detector. The learning curve therefore reflects limited generalisation rather than an optimisation failure alone.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{learn_resnet18_head.png}
+    \caption{ResNet-18 head: train loss and val precision vs.\ epoch.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{learn_faster_rcnn.png}
+    \caption{Faster~R-CNN: train loss and val precision vs.\ epoch.}
+  \end{subfigure}
+  \caption{Learning curves for project-trained detectors (best configuration per family).}
+  \label{fig:learn_resnet_frcnn}
+\end{figure}
+
+Ultralytics models (YOLO / RT-DETR) produce their own training diagnostics. The YOLO plot (Figure~\ref{fig:learn_yolo}) summarises optimisation and detection quality over epochs: the \emph{box loss} tracks bounding-box regression error, while \emph{mAP@0.5} captures detection performance on the validation set. In our runs, mAP rises quickly and stabilises at a high value, matching the strong mixed-pool test precision reported in Table~\ref{tab:topfive}.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\linewidth]{learn_yolo.png}
+  \caption{Ultralytics YOLO training summary (loss and validation mAP over epochs).}
+  \label{fig:learn_yolo}
+\end{figure}
+
+\subsection{Handcrafted feature ablation (RQ3) and implications for transfer (RQ2)}
+\label{sec:ablation}
+To probe whether handcrafted channels provide robust, complementary information beyond raw RGB, we ran two ablation suites on the heatmap-family pipeline: (i)~\emph{single-feature} runs that keep exactly one channel, and (ii)~\emph{leave-one-out} runs that remove one channel from the full multi-channel baseline. These experiments clarify which features materially contribute under distortion and help contextualise when learned representations (pre-training) vs.\ engineered inductive bias is most useful.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{ablation_sf_mean_precision.png}
+    \caption{Single-feature: mean precision per channel.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{ablation_loo_mean_by_feature.png}
+    \caption{Leave-one-out: mean $\Delta$ precision when removing a channel.}
+  \end{subfigure}
+  \caption{Ablation results for handcrafted channels. Positive $\Delta$ indicates the removed feature hurt performance (feature was helpful).}
+  \label{fig:ablation}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{ablation_single_feature.png}
+    \caption{Single-feature suite (full per-distortion breakdown).}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{ablation_leave_one_out.png}
+    \caption{Leave-one-out suite (full per-distortion breakdown).}
+  \end{subfigure}
+  \caption{Detailed ablation plots exported by the evaluation pipeline.}
+  \label{fig:ablation_detailed}
+\end{figure}
+
+\begin{table}[H]
+  \centering
+  \caption{Leave-one-out ablation: mean change in mixed-pool precision when removing each feature.}
+  \label{tab:ablation_loo}
+  \small
+  \AblationLOOTable
+\end{table}
+
+\begin{table}[H]
+  \centering
+  \caption{Single-feature ablation: mean precision using one channel at a time.}
+  \label{tab:ablation_sf}
+  \small
+  \AblationSingleFeatureTable
+\end{table}
+
+Overall, the ablations show that multiple channels contribute non-trivially and that the benefit is not driven by a single engineered cue. This supports RQ3 and partially addresses RQ2: when pre-training is limited or the domain shift is large, injecting complementary cues (edges / texture / saturation) can act as an inductive bias that improves robustness, narrowing the gap to fully pre-trained detectors.
+
+\subsection{Real-Time Latency Benchmark}
+\label{sec:realtime}
+
+For deployment within the KAZ simulator loop, inference latency is a critical constraint. We benchmarked each pipeline on $n{=}500$ live environment frames using random archer actions, measuring per-frame detection time.
+
+\begin{table}[H]
+  \centering
+  \caption{Inference latency vs.\ mixed-pool precision ($n{=}500$ frames, confidence threshold $0.35$).}
+  \label{tab:realtime}
+  \small
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    \textbf{Model} & \textbf{Mixed Prec.} & \textbf{Mean (ms)} & \textbf{Std (ms)} & \textbf{Observation} \\
+    \midrule
+    RT-DETR        & 0.9897 & 505.5 & 117.6 & Highest precision; prohibitive latency \\
+    YOLOv11n       & 0.9876 & 35.1  & 9.5   & Near-optimal precision; real-time capable \\
+    YOLOv8n        & 0.9813 & 32.2  & 4.6   & Fastest; slightly lower precision \\
+    ResNet-18 head & 0.9833 & 116.1 & 10.8  & Moderate latency \\
+    Heatmap CNN    & 0.9848 & 403.3 & 24.7  & High latency in current implementation \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+RT-DETR achieves the highest mixed precision but at an inference cost approximately $14\times$ that of YOLOv11n (Table~\ref{tab:realtime}). Given the real-time constraints of the KAZ simulator, we select \textbf{YOLOv11n} as the deployment model: it achieves $98.8\%$ of RT-DETR's precision while operating at 28~FPS---well within the simulator's requirements.
+
+% ============================================================
+\section{Conclusions}
+\label{sec:conclusions}
+
+This report presented two complementary investigations within the KAZ multi-agent environment.
+
+\paragraph{Matrix games.}
+We demonstrated that the empirical learning trajectories of Boltzmann and Lenient Boltzmann Q-learning align closely with the continuous-time dynamics predicted by evolutionary game theory~\citep{bloembergen2015}. Lenient Boltzmann Q-learning provides a principled mechanism for improving coordination in games with multiple equilibria by enlarging the basin of attraction of Pareto-optimal outcomes. This benefit is most pronounced in the Subsidy Game, where standard learners are trapped by risk dominance. In games with unique equilibria---whether dominant-strategy (Prisoner's Dilemma) or mixed (Biased RPS)---leniency offers no qualitative improvement, consistent with the theoretical analysis of \citet{panait2006}.
+
+\paragraph{Zombie detection.}
+Among the six detector families evaluated, one-stage Ultralytics models and RT-DETR achieve the highest test precision under mixed visual distortion. A real-time latency benchmark identifies YOLOv11n as the optimal deployment choice, providing near-best accuracy at over an order of magnitude lower latency than RT-DETR. Handcrafted feature channels remain a viable option for resource-constrained settings, while classical methods (HOG+SVM, template matching) and our Faster~R-CNN configuration require substantial re-engineering to be competitive in this domain.
+
+% ============================================================
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

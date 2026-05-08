@@ -1,0 +1,22 @@
+[project]
+name = "kuleuven_mlproject_26"
+version = "1.0.0"
+description = "Template code for KU Leuven Dept CS ML Project course"
+readme = "README.md"
+requires-python = "==3.11.*"
+dependencies = [
+  "pettingzoo[butterfly]",
+  "torch",
+  "torchvision",
+  "numpy",
+  "pygame",
+  "ray[rllib]",
+  "SuperSuit",
+  "dm_tree",
+  "lz4",
+  "gputil",
+  "stable-baselines3",
+  "matplotlib",
+  "pillow",
+]
+

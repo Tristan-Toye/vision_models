@@ -1,0 +1,66 @@
+zombie:
+  bbox_width: 29
+  bbox_height: 31
+
+screen:
+  width: 1280
+  height: 720
+
+dataset:
+  name: "kaz_zombie_v1"
+  # Repo-relative: train/ on SSD; val/ and test/ can be symlinks to USB (see run_pipeline / data layout).
+  base_dir: "zombie_detection/data"
+  num_train_examples: 8000
+  num_val_examples: 1000
+  num_test_examples: 1000
+  max_empty_frames: 500
+  sample_interval: 5
+  distortion_levels: [0, 1, 2, 3, 4, 5]
+  max_zombies: 7
+  min_examples_per_zombie_count: 200
+
+preprocessing:
+  resize: [360, 640]
+
+training:
+  default_batch_size: 8
+  default_lr: 0.001
+  default_epochs: 10
+  device: "cuda"
+
+experiments:
+  models:
+    - "heatmap_cnn"
+    - "resnet18_head"
+    - "resnet50_head"
+    - "yolov8n"
+    - "yolov11n"
+    - "faster_rcnn"
+    - "rt_detr"
+    - "hog_svm"
+    - "template_match"
+  loss_functions:
+    - "focal"
+    - "mse"
+  pretrained_modes:
+    - "finetune"
+  distortion_eval_groups:
+    - name: "none"
+      levels: [0]
+    - name: "low"
+      levels: [1, 2]
+    - name: "high"
+      levels: [3, 4]
+    - name: "extreme"
+      levels: [5]
+    - name: "mixed"
+      levels: [0, 1, 2, 3, 4, 5]
+  preprocessing_variants:
+    - "rgb"
+    - "grayscale"
+    - "rgb_edge"
+  resize_variants:
+    - [360, 640]       # half resolution (native is too heavy for Jetson GPU memory)
+  manual_features_modes:
+    - true
+    - false

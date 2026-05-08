@@ -1,0 +1,15 @@
+# Zombie detector for submission.py (CustomZombieDetectorFunction)
+#
+# Set active_model to one of the keys below. Each model loads weights from
+# submission_models/<name>/ (sync from your evaluate_models output directory).
+#
+# Models are listed best-first by precision_best_mixed on the test set (see
+# zombie_detection/realtime/deployment/ACCURACY_TABLE.txt).
+
+active_model: heatmap_cnn
+
+# Optional overrides (defaults shown)
+# device: auto | cpu | cuda | mps  ("auto" = CUDA if available, else MPS on Apple, else CPU)
+device: auto
+conf_threshold: 0.35
+# config_path: null  # null = zombie_detection/config.yaml
